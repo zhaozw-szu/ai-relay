@@ -116,7 +116,8 @@ export default {
       return json({ error: "request body must be JSON" }, 400);
     }
 
-    if (body.password !== env.RELAY_PASSWORD) return json({ error: "invalid relay password" }, 401);
+    const suppliedPassword = request.headers.get("X-Relay-Password") || body.password;
+    if (suppliedPassword !== env.RELAY_PASSWORD) return json({ error: "invalid relay password" }, 401);
     if (!safeAgentId(body.agent_id)) return json({ error: "invalid agent_id" }, 400);
     const allowed = (env.ALLOWED_AGENTS || "")
       .split(",")

@@ -22,7 +22,6 @@ def main() -> int:
 
     password = args.password or os.environ.get("RELAY_PASSWORD") or getpass.getpass("Relay password: ")
     payload = {
-        "password": password,
         "agent_id": args.agent_id,
         "to": args.to,
         "conversation_id": args.conversation_id or None,
@@ -32,7 +31,7 @@ def main() -> int:
     request = urllib.request.Request(
         args.endpoint.rstrip("/") + "/write",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-Relay-Password": password},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=30) as response:

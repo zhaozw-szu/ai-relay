@@ -1,0 +1,56 @@
+openapi: 3.1.0
+info:
+  title: AI Relay Writer
+  version: 1.0.0
+  description: Write an encrypted message into the public ai-relay GitHub repository.
+servers:
+  - url: https://REPLACE_WITH_WORKER_HOST
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Worker is available
+  /write:
+    post:
+      operationId: writeRelayMessage
+      security:
+        - RelayPassword: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id, to, content]
+              properties:
+                agent_id:
+                  type: string
+                  example: cloud-chatgpt-01
+                to:
+                  type: array
+                  items:
+                    type: string
+                  example: [codex-local-01]
+                conversation_id:
+                  type: string
+                type:
+                  type: string
+                  enum: [task, result, question, ack, cancel]
+                  default: task
+                content:
+                  type: string
+      responses:
+        '200':
+          description: Message was encrypted and committed
+        '401':
+          description: Shared password is invalid
+        '403':
+          description: Agent is not registered
+components:
+  securitySchemes:
+    RelayPassword:
+      type: apiKey
+      in: header
+      name: X-Relay-Password
