@@ -1,0 +1,9 @@
+name = "ai-relay-writer"
+main = "src/index.js"
+compatibility_date = "2026-11-20"
+
+[vars]
+GITHUB_OWNER = "zhaozw-szu"
+GITHUB_REPO = "ai-relay"
+GITHUB_BRANCH = "main"
+ALLOWED_AGENTS = "cloud-chatgpt-01,cloud-claude-01,codex-local-01"
