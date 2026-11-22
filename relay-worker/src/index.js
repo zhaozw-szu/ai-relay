@@ -1,5 +1,7 @@
 const encoder = new TextEncoder();
-const ITERATIONS = 210000;
+// Keep the default within the Workers Free plan's 10 ms CPU limit.
+// Each message stores its own iteration count, so older messages remain readable.
+const ITERATIONS = 20000;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
