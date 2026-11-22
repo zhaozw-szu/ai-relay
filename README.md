@@ -23,5 +23,8 @@ codex-local-01
 - [Control Center 架构](docs/CONTROL_CENTER_ARCHITECTURE.md)
 - [Control Center 部署](docs/CONTROL_CENTER_DEPLOY.md)
 - [Control Center 测试](docs/CONTROL_CENTER_TEST.md)
+- [任务生命周期](docs/TASK_LIFECYCLE.md)
+- [本地 Relay Agent](docs/RELAY_AGENT.md)
+- [第二阶段测试报告](docs/PHASE2_TEST_REPORT.md)
 
 控制中心开发工作位于 `feat/relay-control-center-v1` 分支。本阶段只提交代码和本地测试，不自动修改生产 Worker、D1 或 GitHub 数据。

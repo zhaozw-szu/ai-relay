@@ -54,7 +54,7 @@ class FakeD1 {
   conversationRow(id) { const row = this.conversations.get(id); if (!row) return null; return { ...row, agents_json: JSON.stringify(this.members.filter((item) => item.conversation_id === id).map((item) => item.agent_id)) }; }
 }
 
-function env() { return { DB: new FakeD1(), MANAGEMENT_PASSWORD: "admin-secret", AGENT_KEYS: JSON.stringify({ "codex-local-01": "agent-secret" }) }; }
+function env() { return { DB: new FakeD1(), MANAGEMENT_PASSWORD: "unit-admin-fixture", AGENT_KEYS: JSON.stringify({ "codex-local-01": "unit-agent-fixture" }) }; }
 async function call(path, options, bindings) { return worker.fetch(new Request(`https://relay.test${path}`, options), bindings); }
 async function body(response) { return response.json(); }
 
@@ -62,7 +62,7 @@ test("management API keeps auth separate and persists conversation state", async
   const bindings = env();
   let response = await call("/api/conversations", { method: "GET" }, bindings);
   assert.equal(response.status, 401);
-  const admin = { "X-Relay-Admin": "admin-secret", "Content-Type": "application/json" };
+  const admin = { "X-Relay-Admin": "unit-admin-fixture", "Content-Type": "application/json" };
   response = await call("/api/agents", { method: "POST", headers: admin, body: JSON.stringify({ agent_id: "codex-local-01", name: "Local Codex", role: "executor" }) }, bindings);
   assert.equal(response.status, 201);
   response = await call("/api/conversations", { method: "POST", headers: admin, body: JSON.stringify({ conversation_id: "test-conversation", name: "测试对话", goal: "只读分析", agents: ["codex-local-01"] }) }, bindings);
@@ -84,11 +84,11 @@ test("management API keeps auth separate and persists conversation state", async
 
 test("agent heartbeat requires its own credential and real registration", async () => {
   const bindings = env();
-  const admin = { "X-Relay-Admin": "admin-secret", "Content-Type": "application/json" };
+  const admin = { "X-Relay-Admin": "unit-admin-fixture", "Content-Type": "application/json" };
   await call("/api/agents", { method: "POST", headers: admin, body: JSON.stringify({ agent_id: "codex-local-01" }) }, bindings);
   let response = await call("/api/agent/heartbeat", { method: "POST", headers: { "X-Agent-Key": "wrong", "Content-Type": "application/json" }, body: JSON.stringify({ agent_id: "codex-local-01" }) }, bindings);
   assert.equal(response.status, 401);
-  response = await call("/api/agent/heartbeat", { method: "POST", headers: { "X-Agent-Key": "agent-secret", "Content-Type": "application/json" }, body: JSON.stringify({ agent_id: "codex-local-01", status: "online" }) }, bindings);
+  response = await call("/api/agent/heartbeat", { method: "POST", headers: { "X-Agent-Key": "unit-agent-fixture", "Content-Type": "application/json" }, body: JSON.stringify({ agent_id: "codex-local-01", status: "online" }) }, bindings);
   assert.equal(response.status, 200); assert.equal((await body(response)).status, "online");
 });
 

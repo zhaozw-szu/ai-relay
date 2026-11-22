@@ -1,0 +1,16 @@
+{
+  "worker_url": "https://your-worker.workers.dev",
+  "agent_id": "codex-local-01",
+  "agent_key": "REPLACE_WITH_A_SEPARATE_AGENT_KEY",
+  "poll_interval_seconds": 60,
+  "heartbeat_interval_seconds": 30,
+  "lease_seconds": 900,
+  "max_task_seconds": 1800,
+  "codex_command": ["codex"],
+  "working_directories": {
+    "relay-template": "E:/图像篡改检测/github-relay-template"
+  },
+  "state_file": "E:/ai-relay-agent/agent-state.json",
+  "retry_file": "E:/ai-relay-agent/result-outbox.json",
+  "allow_workspace_write": false
+}

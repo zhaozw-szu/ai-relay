@@ -165,6 +165,82 @@ paths:
         - ManagementPassword: []
       responses:
         '200': { description: Events or message index }
+  /api/conversations/{conversation_id}/tasks:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: listConversationTasks
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Task timeline }
+    post:
+      operationId: createConversationTask
+      security:
+        - ManagementPassword: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_agent_id, instruction]
+              properties:
+                target_agent_id: { type: string }
+                instruction: { type: string }
+                task_type: { type: string, enum: [read_only_analysis, code_change, command] }
+                sandbox_mode: { type: string, enum: [read-only, workspace-write] }
+                working_directory_id: { type: string }
+                idempotency_key: { type: string }
+      responses:
+        '201': { description: Task created }
+  /api/tasks/{task_id}:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getTask
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Task state }
+  /api/agent/heartbeat:
+    post:
+      operationId: agentHeartbeat
+      security:
+        - AgentKey: []
+      responses:
+        '200': { description: Heartbeat accepted }
+  /api/agent/claim:
+    post:
+      operationId: claimTask
+      security:
+        - AgentKey: []
+      responses:
+        '200': { description: At most one task lease }
+  /api/agent/tasks/{task_id}/{agent_action}:
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: agent_action
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [ack, renew, result]
+    post:
+      operationId: agentTaskAction
+      security:
+        - AgentKey: []
+      responses:
+        '200': { description: Task lease action accepted }
 components:
   securitySchemes:
     RelayPassword:
@@ -175,3 +251,7 @@ components:
       type: apiKey
       in: header
       name: X-Relay-Admin
+    AgentKey:
+      type: apiKey
+      in: header
+      name: X-Agent-Key

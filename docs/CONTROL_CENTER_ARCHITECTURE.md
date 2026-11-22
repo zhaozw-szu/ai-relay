@@ -2,7 +2,7 @@
 
 ## 目标和范围
 
-这一版把现有的 GitHub 加密消息中转扩展成可持久化的控制中心。GitHub Pages 是管理界面，Cloudflare Worker 是 API 层，Cloudflare D1 保存状态和索引，GitHub 仓库继续保存兼容旧协议的加密消息正文。本提交只完成第一阶段的状态管理和 API，没有部署生产，也没有实现云端模型的自动调用。
+这一版把现有的 GitHub 加密消息中转扩展成可持久化的控制中心。GitHub Pages 是管理界面，Cloudflare Worker 是 API 层，Cloudflare D1 保存状态和索引，GitHub 仓库继续保存兼容旧协议的加密消息正文。第一阶段提交完成状态管理和 API；第二阶段在同一开发分支增加任务队列和本地 Agent。两阶段都没有部署生产，也没有实现云端模型自动调用。
 
 ## 组件职责
 
@@ -71,4 +71,4 @@ POST /api/agent/tasks/:task_id/result
 
 ## 明确未实现
 
-本阶段还没有把任务自动创建、Codex CLI 执行、审批前置阻断、D1 Cron、云端 ChatGPT/Claude API Adapter 接入生产。页面显示的代理状态只能来自已写入 D1 的注册记录和心跳，不能凭名称推断在线。
+第二阶段已经实现本地任务 API、租约、审批状态转换和模拟 Agent 测试，但还没有完成本地测试 Worker/D1 上的真实闭环。D1 Cron、云端 ChatGPT/Claude API Adapter 和自动生成下一轮任务仍属于后续阶段。页面显示的代理状态只能来自已写入 D1 的注册记录和心跳，不能凭名称推断在线。
