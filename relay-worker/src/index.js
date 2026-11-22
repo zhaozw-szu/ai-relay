@@ -133,13 +133,6 @@ export default {
     const suppliedPassword = request.headers.get("X-Relay-Password") || body.password;
     if (suppliedPassword !== env.RELAY_PASSWORD) return json({ error: "invalid relay password" }, 401);
     if (!safeAgentId(body.agent_id)) return json({ error: "invalid agent_id" }, 400);
-    const allowed = (env.ALLOWED_AGENTS || "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (allowed.length && !allowed.includes(body.agent_id)) {
-      return json({ error: "agent_id is not registered" }, 403);
-    }
     if (typeof body.content !== "string" || body.content.length === 0 || body.content.length > 100000) {
       return json({ error: "content must be 1-100000 characters" }, 400);
     }
