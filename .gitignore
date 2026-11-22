@@ -2,5 +2,7 @@
 __pycache__/
 *.py[cod]
 inbox/
+test_message.txt
+response.txt
 node_modules/
 .wrangler/

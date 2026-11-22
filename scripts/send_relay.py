@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+from urllib.error import HTTPError
 import urllib.request
 
 
@@ -37,11 +38,21 @@ def main() -> int:
     request = urllib.request.Request(
         args.endpoint.rstrip("/") + "/write",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Relay-Password": password},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ai-relay-client/1.0",
+            "X-Relay-Password": password,
+        },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        print(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            print(response.read().decode("utf-8"))
+    except HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        print(details)
+        return 1
     return 0
 
 

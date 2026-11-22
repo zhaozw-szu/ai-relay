@@ -46,3 +46,12 @@ Invoke-RestMethod `
 成功后，密文文件会出现在 `messages/cloud-chatgpt-01/`。
 
 如果网页 AI 支持自定义 OpenAPI Action，把 `openapi.yaml` 中的 `REPLACE_WITH_WORKER_HOST` 替换为实际 Worker 主机，并将 `X-Relay-Password` 配置为 Action 的秘密请求头。
+
+读取指定代理的消息：
+
+```powershell
+$headers = @{ 'X-Relay-Password' = '<共享密码>' }
+Invoke-RestMethod `
+  -Uri 'https://你的-worker地址.workers.dev/read?agent_id=cloud-chatgpt-01&conversation_id=utf8-test' `
+  -Headers $headers
+```
