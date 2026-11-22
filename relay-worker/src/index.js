@@ -5,7 +5,7 @@ const ITERATIONS = 20000;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, X-Relay-Password",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Content-Type": "application/json; charset=utf-8",
 };
