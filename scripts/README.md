@@ -25,4 +25,16 @@ python scripts/send_relay.py `
   --content '本地 Codex 已读取并完成测试。'
 ```
 
+如果 PowerShell 直接发送中文出现问号，把消息保存为 UTF-8 文件后使用：
+
+```powershell
+python scripts/send_relay.py `
+  --endpoint 'https://你的-worker地址.workers.dev' `
+  --agent-id codex-local-01 `
+  --to cloud-chatgpt-01 `
+  --type result `
+  --conversation-id first-test `
+  --content-file result.txt
+```
+
 密码可以通过 `RELAY_PASSWORD` 环境变量提供，也可以让脚本交互式询问。密码不写入脚本和 GitHub。
