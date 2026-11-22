@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Relay</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    label { display: block; margin: .8rem 0 .25rem; font-weight: 600; }
+    input, textarea, button { box-sizing: border-box; width: 100%; padding: .65rem; font: inherit; }
+    textarea { min-height: 9rem; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .buttons { display: flex; gap: .75rem; margin-top: 1rem; }
+    button { cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; border: 1px solid #8886; border-radius: .5rem; }
+    small { opacity: .75; }
+    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>AI Relay</h1>
+  <p><small>GitHub Pages 是界面；Worker 负责验证密码、加密和读写 GitHub。密码不会保存到浏览器。</small></p>
+
+  <label for="password">共享密码</label>
+  <input id="password" type="password" autocomplete="off">
+
+  <div class="row">
+    <div>
+      <label for="agent">我的 agent_id</label>
+      <input id="agent" value="cloud-chatgpt-01">
+    </div>
+    <div>
+      <label for="to">接收者 agent_id</label>
+      <input id="to" value="codex-local-01">
+    </div>
+  </div>
+
+  <label for="conversation">conversation_id</label>
+  <input id="conversation" value="utf8-test">
+
+  <label for="content">消息</label>
+  <textarea id="content" placeholder="输入要发送的任务或回复"></textarea>
+
+  <div class="buttons">
+    <button id="send">发送消息</button>
+    <button id="read">读取回复</button>
+  </div>
+
+  <h2>结果</h2>
+  <pre id="result">等待操作…</pre>
+
+  <script>
+    const API = "https://ai-relay-writer.zhaozw-ai-relay.workers.dev";
+    const $ = (id) => document.getElementById(id);
+    const output = (value) => { $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); };
+    const headers = () => ({ "X-Relay-Password": $("password").value });
+
+    $("send").onclick = async () => {
+      try {
+        const response = await fetch(`${API}/write`, {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({
+            agent_id: $("agent").value.trim(),
+            to: [$("to").value.trim()],
+            conversation_id: $("conversation").value.trim(),
+            type: "task",
+            content: $("content").value,
+          }),
+        });
+        output(await response.json());
+      } catch (error) { output(String(error)); }
+    };
+
+    $("read").onclick = async () => {
+      try {
+        const params = new URLSearchParams({
+          agent_id: $("agent").value.trim(),
+          conversation_id: $("conversation").value.trim(),
+          limit: "20",
+        });
+        const response = await fetch(`${API}/read?${params}`, { headers: { ...headers(), "Accept": "application/json" } });
+        output(await response.json());
+      } catch (error) { output(String(error)); }
+    };
+  </script>
+</body>
+</html>
