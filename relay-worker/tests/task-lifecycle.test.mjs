@@ -20,11 +20,7 @@ class TaskStatement {
       const task = this.db.tasks.get(this.args[0]);
       return task ? { ...task, approval_status: task.approval_id ? this.db.approvals.get(task.approval_id)?.status || null : null } : null;
     }
-    if (s.startsWith("SELECT t.*, c.state AS conversation_state")) {
-      const task = [...this.db.tasks.values()].find((item) => item.target_agent_id === this.args[0] && item.execution_state === "pending" && item.available_at <= this.args[1] && this.db.conversations.get(item.conversation_id)?.state === "running" && (!item.approval_id || this.db.approvals.get(item.approval_id)?.status === "approved"));
-      if (!task) return null;
-      return { ...task, conversation_state: "running", active_hours_json: null, timezone: "UTC", approval_status: task.approval_id ? this.db.approvals.get(task.approval_id)?.status || null : null };
-    }
+    if (s.startsWith("SELECT * FROM message_outbox")) return null;
     if (s.startsWith("SELECT approval_id")) return this.db.approvals.get(this.args[0]) || null;
     if (s.startsWith("SELECT task_id, conversation_id FROM approvals")) { const approval = this.db.approvals.get(this.args[0]); return approval ? { task_id: approval.task_id, conversation_id: approval.conversation_id } : null; }
     return null;
@@ -32,6 +28,7 @@ class TaskStatement {
   async all() {
     const s = this.sql;
     if (s.startsWith("SELECT agent_id, role FROM conversation_agents")) return { results: this.db.members.filter((item) => item.conversation_id === this.args[0]) };
+    if (s.startsWith("SELECT t.*, c.state AS conversation_state")) return { results: [...this.db.tasks.values()].filter((item) => item.target_agent_id === this.args[0] && item.execution_state === "pending" && item.available_at <= this.args[1] && this.db.conversations.get(item.conversation_id)?.state === "running" && (!item.approval_id || this.db.approvals.get(item.approval_id)?.status === "approved")).sort((left, right) => Number(right.priority || 0) - Number(left.priority || 0)).slice(0, this.args[2]).map((task) => ({ ...task, conversation_state: "running", active_hours_json: this.db.conversations.get(task.conversation_id)?.active_hours_json || null, timezone: this.db.conversations.get(task.conversation_id)?.timezone || "UTC", approval_status: task.approval_id ? this.db.approvals.get(task.approval_id)?.status || null : null })) };
     if (s.startsWith("SELECT t.*, a.status AS approval_status")) return { results: [...this.db.tasks.values()].filter((item) => item.conversation_id === this.args[0]).map((item) => ({ ...item, approval_status: null })) };
     return { results: [] };
   }
@@ -72,7 +69,7 @@ class TaskStatement {
     if (s.startsWith("UPDATE tasks SET execution_state = 'pending'")) { const task = this.db.tasks.get(this.args[1]); if (!task || task.execution_state !== "waiting_approval") return { meta: { changes: 0 } }; task.execution_state = "pending"; task.status = "queued"; return { meta: { changes: 1 } }; }
     if (s.startsWith("UPDATE tasks SET execution_state = 'running'")) { const task = this.db.tasks.get(this.args[2]); if (!task || task.lease_token !== this.args[4] || task.execution_state !== "claimed") return { meta: { changes: 0 } }; task.execution_state = "running"; task.status = "running"; return { meta: { changes: 1 } }; }
     if (s.startsWith("UPDATE tasks SET lease_expires_at")) { const task = this.db.tasks.get(this.args[2]); if (!task || task.lease_token !== this.args[4]) return { meta: { changes: 0 } }; task.lease_expires_at = this.args[0]; return { meta: { changes: 1 } }; }
-    if (s.startsWith("UPDATE tasks SET execution_state = ?")) { const task = this.db.tasks.get(this.args[8]); if (!task || task.lease_token !== this.args[10]) return { meta: { changes: 0 } }; task.execution_state = this.args[0]; task.status = this.args[1]; task.result_id = this.args[2]; task.lease_token = null; return { meta: { changes: 1 } }; }
+    if (s.startsWith("UPDATE tasks SET execution_state = ?")) { const task = this.db.tasks.get(this.args[9]); if (!task || task.lease_token !== this.args[11]) return { meta: { changes: 0 } }; task.execution_state = this.args[0]; task.status = this.args[1]; task.result_id = this.args[2]; task.result_summary = this.args[4]; task.finished_at = this.args[7]; task.updated_at = this.args[8]; task.lease_token = null; return { meta: { changes: 1 } }; }
     return { meta: { changes: 1 } };
   }
 }

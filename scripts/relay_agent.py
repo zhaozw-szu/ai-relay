@@ -185,6 +185,31 @@ def _secure_file(path: Path) -> None:
         pass
 
 
+KNOWN_CODEX_RUNTIME_ERRORS = (
+    "registered core process has no package identity",
+    "failed to create unified exec process",
+)
+
+
+def _codex_diagnostics(config: AgentConfig, stdout: str, stderr: str) -> tuple[str, str, str]:
+    safe_stdout = redact(stdout or "", config.agent_key)[-20000:]
+    safe_stderr = redact(stderr or "", config.agent_key)[-5000:]
+    summary = (safe_stdout or safe_stderr).strip()[-10000:]
+    return safe_stdout, safe_stderr, summary
+
+
+def _codex_completion_error(stdout: str, stderr: str) -> str | None:
+    combined = f"{stdout}\n{stderr}".lower()
+    for marker in KNOWN_CODEX_RUNTIME_ERRORS:
+        if marker in combined:
+            return marker
+    # A zero exit code with no stdout is not evidence that the requested task
+    # completed; Windows runtime failures have occasionally exited cleanly.
+    if not stdout.strip():
+        return "missing Codex completion output"
+    return None
+
+
 def execute_codex(config: AgentConfig, task: dict[str, Any], timeout: int | None = None, cancel_event: threading.Event | None = None, process_callback: Callable[[Any | None], None] | None = None) -> dict[str, Any]:
     sandbox = task.get("sandbox_mode", "read-only")
     if sandbox not in {"read-only", "workspace-write"}:
@@ -242,21 +267,25 @@ def execute_codex(config: AgentConfig, task: dict[str, Any], timeout: int | None
         if process_callback is not None:
             process_callback(None)
     if lease_lost:
-        summary = (stdout or stderr).strip()[-10000:]
+        safe_stdout, safe_stderr, summary = _codex_diagnostics(config, stdout, stderr)
         return {
             "status": "failed",
             "result_summary": summary,
             "error": "task lease was lost; Codex execution was terminated",
             "error_code": "lease_lost",
+            "result": {"stdout": safe_stdout, "stderr": safe_stderr},
             "duration_seconds": round(time.monotonic() - started, 3),
         }
     duration = round(time.monotonic() - started, 3)
-    summary = (stdout or stderr).strip()[-10000:]
+    safe_stdout, safe_stderr, summary = _codex_diagnostics(config, stdout, stderr)
     if timed_out:
-        return {"status": "timed_out", "result_summary": summary, "error": "Codex CLI timed out", "error_code": "timeout", "duration_seconds": duration}
+        return {"status": "timed_out", "result_summary": summary, "error": "Codex CLI timed out", "error_code": "timeout", "result": {"stdout": safe_stdout, "stderr": safe_stderr}, "duration_seconds": duration}
     if process.returncode != 0:
-        return {"status": "failed", "result_summary": summary, "error": f"Codex CLI exited with {process.returncode}", "error_code": "codex_exit", "duration_seconds": duration}
-    return {"status": "succeeded", "result_summary": summary, "result": {"stdout": stdout[-20000:], "stderr": stderr[-5000:]}, "duration_seconds": duration}
+        return {"status": "failed", "result_summary": summary, "error": f"Codex CLI exited with {process.returncode}", "error_code": "codex_exit", "result": {"stdout": safe_stdout, "stderr": safe_stderr}, "duration_seconds": duration}
+    completion_error = _codex_completion_error(safe_stdout, safe_stderr)
+    if completion_error:
+        return {"status": "failed", "result_summary": summary, "error": f"Codex completion was not confirmed: {completion_error}", "error_code": "completion_unconfirmed", "result": {"stdout": safe_stdout, "stderr": safe_stderr}, "duration_seconds": duration}
+    return {"status": "succeeded", "result_summary": summary, "result": {"stdout": safe_stdout, "stderr": safe_stderr}, "duration_seconds": duration}
 
 
 class RelayAgent:

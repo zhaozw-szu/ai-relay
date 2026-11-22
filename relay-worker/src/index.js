@@ -4,6 +4,7 @@ const encoder = new TextEncoder();
 const ITERATIONS = 20000;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+const MAX_CLAIM_CANDIDATES = 100;
 const MANAGEMENT_HEADER = "X-Relay-Admin";
 const AGENT_HEADER = "X-Agent-Key";
 
@@ -107,6 +108,26 @@ async function writeGitHubFile(env, path, contents, message) {
   return { ok: true };
 }
 
+function decodeGitHubFile(data) {
+  if (!data || typeof data.content !== "string") return null;
+  try { return new TextDecoder().decode(fromBase64(data.content)); } catch { return null; }
+}
+
+async function writeGitHubFileIdempotent(env, path, contents, message) {
+  const written = await writeGitHubFile(env, path, contents, message);
+  if (written.ok) return written;
+  // A lost response can leave the file committed even though the PUT looked
+  // like a network failure. Read the deterministic path before retrying so a
+  // retry never creates a second message or overwrites different content.
+  const existing = await readGitHubJson(env, path);
+  if (existing.ok) {
+    const existingContents = decodeGitHubFile(existing.data);
+    if (existingContents === contents) return { ok: true, already_exists: true };
+    return { ok: false, status: 409, details: "GitHub path already contains different content" };
+  }
+  return written;
+}
+
 function database(env) { return env.DB || env.D1 || null; }
 function requireDatabase(request, env) { return database(env) ? null : json({ error: "D1 is not configured" }, 503, request, env); }
 async function dbFirst(env, sql, ...args) { return database(env).prepare(sql).bind(...args).first(); }
@@ -136,7 +157,7 @@ function isAuthenticatedAgent(request, env, agentId) { const keys = agentKeys(en
 async function readBody(request) { try { return await request.json(); } catch { return null; } }
 function messageRecipients(value) { const list = Array.isArray(value) ? value : [value]; return list.length && list.every((item) => item === "broadcast" || safeAgentId(item)) ? list : null; }
 
-async function createMessage(env, body, password) {
+async function buildMessage(env, body, password) {
   if (!safeAgentId(body.agent_id)) return { error: "invalid agent_id" };
   if (typeof body.content !== "string" || body.content.length === 0 || body.content.length > 100000) return { error: "content must be 1-100000 characters" };
   const recipients = messageRecipients(body.to || "broadcast");
@@ -146,9 +167,15 @@ async function createMessage(env, body, password) {
   const encrypted = await encryptText(body.content, password);
   const record = { version: 2, id, from: body.agent_id, to: recipients, conversation_id: safeConversationId(body.conversation_id) ? body.conversation_id : null, type: typeof body.type === "string" ? body.type.slice(0, 32) : "task", reply_to: typeof body.reply_to === "string" ? body.reply_to.slice(0, 128) : null, task_id: typeof body.task_id === "string" ? body.task_id.slice(0, 128) : null, created_at: createdAt.toISOString(), crypto: { algorithm: encrypted.algorithm, kdf: encrypted.kdf, iterations: encrypted.iterations, salt_b64: encrypted.salt_b64, iv_b64: encrypted.iv_b64 }, ciphertext_b64: encrypted.ciphertext_b64 };
   const path = `messages/${body.agent_id}/${stamp}-${id.slice(-12)}.json`;
-  const result = await writeGitHubFile(env, path, JSON.stringify(record, null, 2), `relay: ${body.agent_id} ${id}`);
+  return { ok: true, record, path, contents: JSON.stringify(record, null, 2), commit_message: `relay: ${body.agent_id} ${id}` };
+}
+
+async function createMessage(env, body, password) {
+  const built = await buildMessage(env, body, password);
+  if (!built.ok) return built;
+  const result = await writeGitHubFileIdempotent(env, built.path, built.contents, built.commit_message);
   if (!result.ok) return { error: "GitHub write failed", status: result.status, details: result.details };
-  return { ok: true, record, path };
+  return { ok: true, record: built.record, path: built.path, already_exists: result.already_exists === true };
 }
 
 async function handleLegacyRead(request, env, url) {
@@ -232,6 +259,57 @@ async function getTask(env, taskId) {
 
 async function conversationAgents(env, conversationId) {
   return dbAll(env, `SELECT agent_id, role FROM conversation_agents WHERE conversation_id = ? ORDER BY agent_id`, conversationId);
+}
+
+function messageOutboxView(row) {
+  if (!row) return null;
+  return { outbox_id: row.outbox_id, message_id: row.message_id, task_id: row.task_id, conversation_id: row.conversation_id, path: row.path, status: row.status, attempts: Number(row.attempts || 0), last_error: row.last_error || null, next_attempt_at: row.next_attempt_at || null, created_at: row.created_at, updated_at: row.updated_at };
+}
+
+async function prepareTaskResultOutbox(env, task, agentId, requestedStatus, summary, resultId) {
+  if (!env.RELAY_PASSWORD || !env.GITHUB_TOKEN || !summary) return null;
+  const members = await conversationAgents(env, task.conversation_id);
+  const recipients = members.map((item) => item.agent_id).filter((id) => id !== agentId);
+  if (!recipients.length) return null;
+  const built = await buildMessage(env, { agent_id: agentId, to: recipients, conversation_id: task.conversation_id, type: requestedStatus === "succeeded" ? "result" : "question", task_id: task.task_id, content: summary }, env.RELAY_PASSWORD);
+  if (!built.ok) throw new Error(built.error || "result message could not be prepared");
+  const now = new Date().toISOString();
+  const outbox = { outbox_id: newId("outbox"), message_id: built.record.id, task_id: task.task_id, conversation_id: task.conversation_id, from_agent: built.record.from, to_agents_json: JSON.stringify(built.record.to), type: built.record.type, reply_to: built.record.reply_to, path: built.path, record_json: built.contents, status: "pending", attempts: 0, last_error: null, next_attempt_at: null, created_at: now, updated_at: now };
+  const statement = database(env).prepare(`INSERT INTO message_outbox (outbox_id, message_id, task_id, conversation_id, from_agent, to_agents_json, type, reply_to, path, record_json, status, attempts, last_error, next_attempt_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM tasks WHERE task_id = ? AND result_id = ? AND execution_state = ? )`).bind(outbox.outbox_id, outbox.message_id, outbox.task_id, outbox.conversation_id, outbox.from_agent, outbox.to_agents_json, outbox.type, outbox.reply_to, outbox.path, outbox.record_json, outbox.status, outbox.attempts, outbox.last_error, outbox.next_attempt_at, outbox.created_at, outbox.updated_at, task.task_id, resultId, requestedStatus);
+  return { row: outbox, statement };
+}
+
+async function markMessageOutboxFailure(env, row, status, error) {
+  const now = new Date().toISOString();
+  const details = String(error || "message delivery failed").slice(0, 240);
+  try {
+    await dbRun(env, `UPDATE message_outbox SET status = ?, attempts = attempts + 1, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE outbox_id = ?`, status, details, now, now, row.outbox_id);
+  } catch { /* keep the original delivery failure visible to the caller */ }
+  return { ...messageOutboxView(row), status, attempts: Number(row.attempts || 0) + 1, last_error: details, next_attempt_at: now, retryable: true };
+}
+
+async function deliverMessageOutbox(env, outboxId) {
+  const row = await dbFirst(env, `SELECT * FROM message_outbox WHERE outbox_id = ?`, outboxId);
+  if (!row) return { status: "missing", retryable: false };
+  if (row.status === "delivered") return { ...messageOutboxView(row), retryable: false };
+  let status = row.status;
+  if (status !== "index_pending") {
+    const written = await writeGitHubFileIdempotent(env, row.path, row.record_json, `relay: ${row.from_agent} ${row.message_id}`);
+    if (!written.ok) return markMessageOutboxFailure(env, row, "pending", written.details || "GitHub write failed");
+    try {
+      await dbRun(env, `UPDATE message_outbox SET status = 'index_pending', last_error = NULL, next_attempt_at = NULL, updated_at = ? WHERE outbox_id = ?`, new Date().toISOString(), row.outbox_id);
+    } catch (error) {
+      return markMessageOutboxFailure(env, row, "pending", error);
+    }
+    status = "index_pending";
+  }
+  try {
+    await dbRun(env, `INSERT OR IGNORE INTO message_index (message_id, conversation_id, from_agent, to_agents_json, type, reply_to, task_id, path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.message_id, row.conversation_id, row.from_agent, row.to_agents_json, row.type, row.reply_to, row.task_id, row.path, row.created_at);
+    await dbRun(env, `UPDATE message_outbox SET status = 'delivered', last_error = NULL, next_attempt_at = NULL, updated_at = ? WHERE outbox_id = ?`, new Date().toISOString(), row.outbox_id);
+  } catch (error) {
+    return markMessageOutboxFailure(env, row, "index_pending", error);
+  }
+  return { ...messageOutboxView({ ...row, status: "delivered", last_error: null, next_attempt_at: null }), retryable: false };
 }
 
 function validIsoDate(value) {
@@ -371,10 +449,15 @@ async function handleConversations(request, env, url, conversationId = null) {
     const input = conversationInput(body || {}); if (input.error) return json(input, 400, request, env);
     const agents = Array.isArray(body.agents) ? body.agents : Array.isArray(body.agent_ids) ? body.agent_ids.map((agent_id) => ({ agent_id })) : [];
     if (!agents.length || !agents.every((item) => safeAgentId(typeof item === "string" ? item : item.agent_id))) return json({ error: "at least one valid agent is required" }, 400, request, env);
+    const agentIds = agents.map((item) => typeof item === "string" ? item : item.agent_id);
+    if (new Set(agentIds).size !== agentIds.length) return json({ error: "conversation agents must be unique" }, 400, request, env);
+    const existingAgents = await dbAll(env, `SELECT agent_id FROM agents WHERE agent_id IN (${agentIds.map(() => "?").join(",")})`, ...agentIds);
+    if (existingAgents.length !== agentIds.length) return json({ error: "all conversation agents must be registered" }, 400, request, env);
     const now = new Date().toISOString();
     try {
-      await dbRun(env, `INSERT INTO conversations (conversation_id, name, goal, state, max_rounds, round_delay_seconds, poll_interval_seconds, active_hours_json, timezone, require_approval, next_run_at, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.name, input.goal, input.max_rounds, input.round_delay_seconds, input.poll_interval_seconds, JSON.stringify(input.active_hours), input.timezone, input.require_approval ? 1 : 0, input.next_run_at, now, now, now);
-      for (const item of agents) { const agentId = typeof item === "string" ? item : item.agent_id; await dbRun(env, `INSERT INTO conversation_agents (conversation_id, agent_id, role) VALUES (?, ?, ?)`, id, agentId, text(typeof item === "string" ? "" : item.role) || "participant"); }
+      const statements = [database(env).prepare(`INSERT INTO conversations (conversation_id, name, goal, state, max_rounds, round_delay_seconds, poll_interval_seconds, active_hours_json, timezone, require_approval, next_run_at, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, input.name, input.goal, input.max_rounds, input.round_delay_seconds, input.poll_interval_seconds, JSON.stringify(input.active_hours), input.timezone, input.require_approval ? 1 : 0, input.next_run_at, now, now, now)];
+      for (const item of agents) { const agentId = typeof item === "string" ? item : item.agent_id; statements.push(database(env).prepare(`INSERT INTO conversation_agents (conversation_id, agent_id, role) VALUES (?, ?, ?)`).bind(id, agentId, text(typeof item === "string" ? "" : item.role) || "participant")); }
+      await dbBatch(env, statements);
     } catch (error) { return json({ error: "conversation could not be created", details: String(error).slice(0, 160) }, 409, request, env); }
     await audit(env, { conversationId: id, actor: "admin", eventType: "conversation.created", payload: { agents: agents.map((item) => typeof item === "string" ? item : item.agent_id) } });
     return json({ ok: true, conversation: conversationView(await getConversation(env, id)) }, 201, request, env);
@@ -443,9 +526,9 @@ async function handleClaim(request, env) {
   if (!await dbFirst(env, `SELECT agent_id FROM agents WHERE agent_id = ?`, agentId)) return json({ error: "agent is not registered" }, 404, request, env);
   const now = new Date().toISOString();
   await dbRun(env, `UPDATE tasks SET execution_state = CASE WHEN attempt_count >= max_attempts THEN 'timed_out' ELSE 'pending' END, status = CASE WHEN attempt_count >= max_attempts THEN 'failed' ELSE 'queued' END, assigned_agent_id = NULL, lease_expires_at = NULL, lease_token = NULL, updated_at = ? WHERE execution_state IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`, now, now);
-  const candidate = await dbFirst(env, `SELECT t.*, c.state AS conversation_state, c.active_hours_json, c.timezone, a.status AS approval_status FROM tasks t JOIN conversations c ON c.conversation_id = t.conversation_id LEFT JOIN approvals a ON a.approval_id = t.approval_id WHERE t.target_agent_id = ? AND t.execution_state = 'pending' AND t.attempt_count < t.max_attempts AND c.state = 'running' AND (t.available_at IS NULL OR t.available_at <= ?) AND (t.approval_id IS NULL OR a.status = 'approved') ORDER BY t.priority DESC, t.created_at LIMIT 1`, agentId, now);
-  if (!candidate) return json({ ok: true, task: null }, 200, request, env);
-  if (!activeHoursAllow(candidate.active_hours_json, candidate.timezone)) return json({ ok: true, task: null, outside_active_hours: true }, 200, request, env);
+  const candidates = await dbAll(env, `SELECT t.*, c.state AS conversation_state, c.active_hours_json, c.timezone, a.status AS approval_status FROM tasks t JOIN conversations c ON c.conversation_id = t.conversation_id LEFT JOIN approvals a ON a.approval_id = t.approval_id WHERE t.target_agent_id = ? AND t.execution_state = 'pending' AND t.attempt_count < t.max_attempts AND c.state = 'running' AND (t.available_at IS NULL OR t.available_at <= ?) AND (t.approval_id IS NULL OR a.status = 'approved') ORDER BY t.priority DESC, t.created_at LIMIT ?`, agentId, now, MAX_CLAIM_CANDIDATES);
+  const candidate = candidates.find((item) => activeHoursAllow(item.active_hours_json, item.timezone));
+  if (!candidate) return json({ ok: true, task: null, outside_active_hours: candidates.length > 0 }, 200, request, env);
   const leaseSeconds = Math.min(Math.max(Number(body.lease_seconds || 900), 30), 3600);
   const lease = new Date(Date.now() + leaseSeconds * 1000).toISOString();
   const leaseToken = newId("lease");
@@ -461,10 +544,13 @@ async function handleTaskAction(request, env, taskId, action) {
   if (!safeAgentId(agentId) || !isAuthenticatedAgent(request, env, agentId)) return agentError(request, env);
   const task = await dbFirst(env, `SELECT * FROM tasks WHERE task_id = ?`, taskId); if (!task) return json({ error: "task not found" }, 404, request, env);
   if (task.assigned_agent_id !== agentId) return json({ error: "task is assigned to another agent" }, 403, request, env);
-  const resultId = action === "result" ? text(body.result_id) : "";
+  const resultId = action === "result" ? (text(body.result_id) || `legacy-result-${taskId}`) : "";
   if (action === "result" && body.result_id !== undefined && !safeId(resultId)) return json({ error: "result_id must be a valid id" }, 400, request, env);
   if (action === "result" && resultId && task.result_id === resultId && ["succeeded", "failed", "timed_out", "cancelled"].includes(task.execution_state)) {
-    return json({ ok: true, task_id: taskId, status: task.execution_state, result_id: resultId, idempotent_replay: true }, 200, request, env);
+    const outbox = await dbFirst(env, `SELECT outbox_id FROM message_outbox WHERE task_id = ?`, taskId);
+    const delivery = outbox ? await deliverMessageOutbox(env, outbox.outbox_id) : null;
+    const responseStatus = delivery && delivery.status !== "delivered" ? 202 : 200;
+    return json({ ok: true, task_id: taskId, status: task.execution_state, result_id: resultId, idempotent_replay: true, message: delivery }, responseStatus, request, env);
   }
   if (!body.lease_token || body.lease_token !== task.lease_token) return json({ error: "valid lease_token is required" }, 403, request, env);
   const now = new Date().toISOString();
@@ -481,34 +567,46 @@ async function handleTaskAction(request, env, taskId, action) {
     return json({ ok: true, task_id: taskId, lease_expires_at: lease }, 200, request, env);
   }
   const requestedStatus = body.status === "timed_out" ? "timed_out" : body.status === "failed" ? "failed" : "succeeded";
-  let updated;
+  const summary = text(body.result_summary).slice(0, 10000);
+  let outboxPlan;
   try {
-    updated = await dbRun(env, `UPDATE tasks SET execution_state = ?, status = ?, result_id = ?, result_json = ?, result_summary = ?, error_text = ?, error_code = ?, finished_at = ?, lease_expires_at = NULL, lease_token = NULL, updated_at = ? WHERE task_id = ? AND assigned_agent_id = ? AND lease_token = ? AND execution_state IN ('claimed', 'running') AND lease_expires_at > ?`, requestedStatus, taskStateToLegacyStatus(requestedStatus), resultId || null, JSON.stringify(body.result ?? null), text(body.result_summary).slice(0, 10000), body.error ? text(body.error).slice(0, 2000) : null, text(body.error_code).slice(0, 80) || null, now, taskId, agentId, body.lease_token, now);
+    outboxPlan = await prepareTaskResultOutbox(env, task, agentId, requestedStatus, summary, resultId);
+  } catch (error) {
+    return json({ error: "task result message could not be prepared", details: String(error).slice(0, 180) }, 500, request, env);
+  }
+  const resultStatement = database(env).prepare(`UPDATE tasks SET execution_state = ?, status = ?, result_id = ?, result_json = ?, result_summary = ?, error_text = ?, error_code = ?, finished_at = ?, lease_expires_at = NULL, lease_token = NULL, updated_at = ? WHERE task_id = ? AND assigned_agent_id = ? AND lease_token = ? AND execution_state IN ('claimed', 'running') AND lease_expires_at > ?`).bind(requestedStatus, taskStateToLegacyStatus(requestedStatus), resultId || null, JSON.stringify(body.result ?? null), summary, body.error ? text(body.error).slice(0, 2000) : null, text(body.error_code).slice(0, 80) || null, now, now, taskId, agentId, body.lease_token, now);
+  const statements = [resultStatement];
+  if (outboxPlan) statements.push(outboxPlan.statement);
+  let batchResults;
+  try {
+    batchResults = await dbBatch(env, statements);
   } catch (error) {
     return json({ error: "task result could not be recorded", details: String(error).slice(0, 180) }, 409, request, env);
   }
+  const updated = batchResults?.[0] || {};
   if (!updated.meta?.changes) return json({ error: "task lease is invalid, expired, or already completed" }, 409, request, env);
   await audit(env, { conversationId: task.conversation_id, actor: agentId, eventType: `task.${requestedStatus}`, payload: { task_id: taskId } });
-  let message = null;
-  if (env.RELAY_PASSWORD && env.GITHUB_TOKEN && text(body.result_summary)) {
-    const members = await conversationAgents(env, task.conversation_id);
-    const recipients = members.map((item) => item.agent_id).filter((id) => id !== agentId);
-    if (recipients.length) {
-      const written = await createMessage(env, { agent_id: agentId, to: recipients, conversation_id: task.conversation_id, type: requestedStatus === "succeeded" ? "result" : "question", task_id: taskId, content: text(body.result_summary) }, env.RELAY_PASSWORD);
-      if (written.ok) {
-        try {
-          await dbRun(env, `INSERT INTO message_index (message_id, conversation_id, from_agent, to_agents_json, type, reply_to, task_id, path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, written.record.id, task.conversation_id, written.record.from, JSON.stringify(written.record.to), written.record.type, written.record.reply_to, taskId, written.path, written.record.created_at);
-          message = { id: written.record.id, path: written.path };
-        } catch (error) {
-          message = { id: written.record.id, path: written.path, index_repair_required: true, details: String(error).slice(0, 160) };
-        }
-      } else {
-        message = { message_write_failed: true, details: written.error || "message write failed" };
-      }
-    }
-  }
-  return json({ ok: true, task_id: taskId, status: requestedStatus, result_id: resultId || null, message }, 200, request, env);
+  const delivery = outboxPlan ? await deliverMessageOutbox(env, outboxPlan.row.outbox_id) : null;
+  const responseStatus = delivery && delivery.status !== "delivered" ? 202 : 200;
+  return json({ ok: true, task_id: taskId, status: requestedStatus, result_id: resultId || null, message: delivery }, responseStatus, request, env);
 }
+
+async function handleMessageOutbox(request, env, url, outboxId = null) {
+  const missing = requireDatabase(request, env); if (missing) return missing;
+  if (!isAdmin(request, env)) return adminError(request, env);
+  if (outboxId && !safeId(outboxId)) return json({ error: "invalid outbox_id" }, 400, request, env);
+  if (request.method === "GET" && !outboxId) {
+    const status = text(url.searchParams.get("status"));
+    const rows = await dbAll(env, `SELECT outbox_id, message_id, task_id, conversation_id, path, status, attempts, last_error, next_attempt_at, created_at, updated_at FROM message_outbox ${["pending", "index_pending", "delivered"].includes(status) ? "WHERE status = ?" : ""} ORDER BY created_at DESC LIMIT ?`, ...(["pending", "index_pending", "delivered"].includes(status) ? [status, limitFrom(url)] : [limitFrom(url)]));
+    return json({ ok: true, outbox: rows.map(messageOutboxView) }, 200, request, env);
+  }
+  if (outboxId && request.method === "POST" && url.pathname.endsWith("/retry")) {
+    const delivery = await deliverMessageOutbox(env, outboxId);
+    return json({ ok: delivery.status === "delivered", outbox: delivery }, delivery.status === "delivered" ? 200 : 202, request, env);
+  }
+  return json({ error: "use GET /api/message-outbox or POST /api/message-outbox/:outbox_id/retry" }, 405, request, env);
+}
+
 async function handleApprovals(request, env, url, approvalId = null) {
   const missing = requireDatabase(request, env); if (missing) return missing;
   if (!isAdmin(request, env)) return adminError(request, env);
@@ -531,6 +629,7 @@ async function routeApi(request, env, url) {
   if (url.pathname === "/api/agent/heartbeat" && request.method === "POST") return handleHeartbeat(request, env);
   if (url.pathname === "/api/agent/claim" && request.method === "POST") return handleClaim(request, env);
   const taskMatch = url.pathname.match(/^\/api\/agent\/tasks\/([^/]+)\/(ack|renew|result)$/); if (taskMatch && request.method === "POST") return handleTaskAction(request, env, taskMatch[1], taskMatch[2]);
+  const outboxMatch = url.pathname.match(/^\/api\/message-outbox(?:\/([^/]+)\/retry)?$/); if (outboxMatch && (request.method === "GET" || request.method === "POST")) return handleMessageOutbox(request, env, url, outboxMatch[1] || null);
   const approvalMatch = url.pathname.match(/^\/api\/approvals(?:\/([^/]+)\/decision)?$/); if (approvalMatch) return handleApprovals(request, env, url, approvalMatch[1] || null);
   if (url.pathname === "/api/conversations") return handleConversations(request, env, url);
   const taskCreateMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/tasks$/); if (taskCreateMatch && request.method === "POST") return handleTaskCreate(request, env, taskCreateMatch[1]);

@@ -17,6 +17,7 @@ class FakeStatement {
   }
   async all() {
     const s = this.sql;
+    if (s.startsWith("SELECT agent_id FROM agents WHERE agent_id IN")) return { results: this.args.map((id) => this.db.agents.get(id)).filter(Boolean).map((row) => ({ agent_id: row.agent_id })) };
     if (s.startsWith("SELECT agent_id, name, type")) return { results: [...this.db.agents.values()] };
     if (s.startsWith("SELECT c.*")) return { results: [...this.db.conversations.values()].filter((row) => !s.includes("WHERE c.archived_at") || !row.archived_at).map((row) => this.db.conversationRow(row.conversation_id)) };
     if (s.startsWith("SELECT event_id")) return { results: [...this.db.events].filter((row) => row.conversation_id === this.args[0]) };
@@ -38,7 +39,7 @@ class FakeStatement {
       this.db.conversations.set(conversation_id, { conversation_id, name, goal, state: "stopped", max_rounds, round_delay_seconds, poll_interval_seconds, active_hours_json, timezone, require_approval, next_run_at, created_at, updated_at, last_activity_at, archived_at: null });
       return { meta: { changes: 1 } };
     }
-    if (s.startsWith("INSERT INTO conversation_agents")) { this.db.members.push({ conversation_id: this.args[0], agent_id: this.args[1], role: this.args[2] }); return { meta: { changes: 1 } }; }
+    if (s.startsWith("INSERT INTO conversation_agents")) { if (this.db.failMemberAgent === this.args[1]) throw new Error("simulated participant insert failure"); this.db.members.push({ conversation_id: this.args[0], agent_id: this.args[1], role: this.args[2] }); return { meta: { changes: 1 } }; }
     if (s.startsWith("INSERT INTO audit_events")) { this.db.events.push({ event_id: this.args[0], conversation_id: this.args[1], actor: this.args[2], event_type: this.args[3], payload_json: this.args[4], created_at: this.args[5] }); return { meta: { changes: 1 } }; }
     if (s.startsWith("INSERT INTO agent_heartbeats")) return { meta: { changes: 1 } };
     if (s.startsWith("UPDATE conversations SET state")) { const row = this.db.conversations.get(this.args[3]); if (!row || !["stopped", "running", "paused", "archived"].includes(this.args[0])) return { meta: { changes: 0 } }; row.state = this.args[0]; row.updated_at = this.args[1]; row.last_activity_at = this.args[2]; return { meta: { changes: 1 } }; }
@@ -49,8 +50,13 @@ class FakeStatement {
 }
 
 class FakeD1 {
-  constructor() { this.agents = new Map(); this.conversations = new Map(); this.members = []; this.events = []; }
+  constructor() { this.agents = new Map(); this.conversations = new Map(); this.members = []; this.events = []; this.failMemberAgent = null; }
   prepare(sql) { return new FakeStatement(this, sql); }
+  async batch(statements) {
+    const agents = new Map(this.agents); const conversations = new Map(this.conversations); const members = [...this.members]; const events = [...this.events];
+    try { const results = []; for (const statement of statements) results.push(await statement.run()); return results; }
+    catch (error) { this.agents = agents; this.conversations = conversations; this.members = members; this.events = events; throw error; }
+  }
   conversationRow(id) { const row = this.conversations.get(id); if (!row) return null; return { ...row, agents_json: JSON.stringify(this.members.filter((item) => item.conversation_id === id).map((item) => item.agent_id)) }; }
 }
 
@@ -98,4 +104,17 @@ test("legacy health and CORS preflight remain available", async () => {
   assert.equal(response.status, 200); assert.equal((await body(response)).ok, true);
   response = await call("/api/agents", { method: "OPTIONS", headers: { Origin: "https://zhaozw-szu.github.io", "Access-Control-Request-Headers": "x-relay-admin" } }, bindings);
   assert.equal(response.status, 204); assert.match(response.headers.get("Access-Control-Allow-Headers"), /X-Relay-Admin/);
+});
+
+test("conversation creation validates agents and rolls back all participants atomically", async () => {
+  const bindings = env();
+  const admin = { "X-Relay-Admin": "unit-admin-fixture", "Content-Type": "application/json" };
+  for (const agent_id of ["codex-local-01", "cloud-chatgpt-01"]) await call("/api/agents", { method: "POST", headers: admin, body: JSON.stringify({ agent_id }) }, bindings);
+  bindings.DB.failMemberAgent = "cloud-chatgpt-01";
+  let response = await call("/api/conversations", { method: "POST", headers: admin, body: JSON.stringify({ conversation_id: "partial-conversation", name: "Partial", agents: ["codex-local-01", "cloud-chatgpt-01"] }) }, bindings);
+  assert.equal(response.status, 409);
+  assert.equal(bindings.DB.conversations.has("partial-conversation"), false);
+  assert.equal(bindings.DB.members.some((member) => member.conversation_id === "partial-conversation"), false);
+  response = await call("/api/conversations", { method: "POST", headers: admin, body: JSON.stringify({ conversation_id: "missing-agent", name: "Missing", agents: ["codex-local-01", "not-registered"] }) }, bindings);
+  assert.equal(response.status, 400);
 });

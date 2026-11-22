@@ -209,6 +209,26 @@ paths:
         - ManagementPassword: []
       responses:
         '200': { description: Task state }
+  /api/message-outbox:
+    get:
+      operationId: listMessageOutbox
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Durable task-result message delivery records }
+  /api/message-outbox/{outbox_id}/retry:
+    parameters:
+      - name: outbox_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: retryMessageOutbox
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Message delivered and indexed }
+        '202': { description: Delivery remains pending }
   /api/agent/heartbeat:
     post:
       operationId: agentHeartbeat

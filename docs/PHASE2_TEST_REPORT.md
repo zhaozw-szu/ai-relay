@@ -23,7 +23,7 @@ node --check relay-worker/src/index.js
 - 工作目录白名单；
 - 未开启审批时拒绝 workspace-write；
 - UTF-8/AES-GCM 旧消息解密；
-- 三个迁移文件可按顺序应用，第三个迁移增加结果回执幂等 ID。
+- 四个迁移文件可按顺序应用，第三个迁移增加结果回执幂等 ID，第四个迁移增加消息 outbox。
 
 ## 第二阶段修复版新增覆盖
 
@@ -31,6 +31,7 @@ node --check relay-worker/src/index.js
 - 永久回执失败进入 dead-letter，损坏的 outbox 文件会被隔离保存；
 - 明确租约失效触发取消和子进程树终止，过期 lease token 不能提交回执；
 - 暂停与 claim 竞争、客户端降低审批要求、task+approval 部分写入失败和 `result_id` 幂等回执。
+- 真实 SQLite 参数绑定、结果持久化、旧租约拒绝、GitHub 503/响应丢失/索引失败补偿，以及 active-hours 饥饿规避。
 
 ## 真实测试准备
 

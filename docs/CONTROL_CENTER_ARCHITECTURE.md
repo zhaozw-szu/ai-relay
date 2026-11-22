@@ -27,11 +27,11 @@ Worker 可以通过 `CORS_ORIGINS` 限制页面来源。未设置时为兼容已
 - `agents`、`agent_heartbeats`：注册资料、状态和真实心跳；
 - `conversations`、`conversation_agents`：对话配置、参与者、`stopped/running/paused/archived` 状态；
 - `tasks`：幂等键、租约、重试次数和任务生命周期，为第二阶段执行器预留；
-- `message_index`：GitHub 加密消息的轻量索引，不保存明文；
+- `message_index`：GitHub 加密消息的轻量索引，不保存明文；任务结果通过 `message_outbox` 持久化投递状态；
 - `approvals`：任务审批状态；
 - `audit_events`：状态变化和管理操作审计。
 
-状态改变先写 D1 再写审计事件。消息发送先写 GitHub，再写 `message_index`；若索引失败，接口明确返回 `index_repair_required`、`message_id` 和 GitHub path，不把失败伪装成成功。
+状态改变先写 D1 再写审计事件。任务结果先在 D1 写入稳定的消息 ID、加密记录和 GitHub path，再由 `message_outbox` 投递 GitHub，最后补写 `message_index`；GitHub 或索引失败时保留可重试状态，不把失败伪装成成功。
 
 ## API 摘要
 
@@ -48,6 +48,8 @@ POST   /api/conversations/:conversation_id/start|pause|resume|stop
 GET    /api/conversations/:conversation_id/events
 GET    /api/conversations/:conversation_id/messages
 POST   /api/conversations/:conversation_id/messages
+GET    /api/message-outbox
+POST   /api/message-outbox/:outbox_id/retry
 GET    /api/approvals
 POST   /api/approvals/:approval_id/decision
 ```

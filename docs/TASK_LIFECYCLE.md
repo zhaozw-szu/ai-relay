@@ -48,6 +48,8 @@ pending → claimed → running → succeeded
 
 获得租约后必须先 `ack` 进入 `running`，长任务通过 `renew` 延长租约，完成时携带同一个 `lease_token` 调用 `result`。租约过期、令牌不匹配、Agent 不匹配或任务已终态时，Worker 拒绝更新，避免旧执行者覆盖新执行者。
 
+结果提交会生成稳定的 `result_id`。重复提交同一 ID 只返回已有终态，不会重新执行任务。若结果摘要需要发送给其他参与者，Worker 会在同一 D1 批处理中保存加密消息、稳定 GitHub path 和 `message_outbox` 记录；GitHub 写入或 `message_index` 失败时，任务结果仍保留，但消息状态会显示为 `pending` 或 `index_pending`，可通过 `POST /api/message-outbox/:outbox_id/retry` 补偿。
+
 ## 审批
 
 `read_only_analysis + read-only` 可以直接进入 `pending`。代码修改、命令任务、`workspace-write` 或对话要求审批的任务进入 `waiting_approval`，同时创建绑定 `task_id` 的审批记录。批准会把任务转为 `pending`，拒绝会把任务转为 `cancelled`。

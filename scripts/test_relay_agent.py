@@ -97,6 +97,39 @@ class RelayAgentTests(unittest.TestCase):
             self.assertEqual(popen.call_args.kwargs["shell"], False)
             self.assertEqual(result["status"], "succeeded")
 
+    def test_zero_exit_with_windows_runtime_error_is_not_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, codex_command=("codex",))
+            task = {"working_directory_id": "project", "sandbox_mode": "read-only", "approval_status": None, "instruction": "inspect files"}
+
+            class Process:
+                returncode = 0
+
+                def communicate(self, timeout=None):
+                    return "", "Failed to create unified exec process: registered Core process has no package identity"
+
+            with patch("relay_agent.subprocess.Popen", return_value=Process()):
+                result = execute_codex(config, task, timeout=10)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error_code"], "completion_unconfirmed")
+            self.assertIn("registered Core process has no package identity", result["result"]["stderr"])
+
+    def test_zero_exit_without_completion_output_is_unconfirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, codex_command=("codex",))
+            task = {"working_directory_id": "project", "sandbox_mode": "read-only", "approval_status": None, "instruction": "inspect files"}
+
+            class Process:
+                returncode = 0
+
+                def communicate(self, timeout=None):
+                    return "", ""
+
+            with patch("relay_agent.subprocess.Popen", return_value=Process()):
+                result = execute_codex(config, task, timeout=10)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error_code"], "completion_unconfirmed")
+
     def test_successful_codex_result_is_retried_without_rerunning_codex(self):
         with tempfile.TemporaryDirectory() as directory:
             config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, state_file=str(Path(directory) / "state.json"), retry_file=str(Path(directory) / "outbox.json"), dead_letter_file=str(Path(directory) / "dead.json"))
