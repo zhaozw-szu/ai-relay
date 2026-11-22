@@ -12,6 +12,37 @@ paths:
       responses:
         '200':
           description: Worker is available
+  /read:
+    get:
+      operationId: readRelayMessages
+      security:
+        - RelayPassword: []
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+          example: cloud-chatgpt-01
+        - name: conversation_id
+          in: query
+          required: false
+          schema:
+            type: string
+          example: utf8-test
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 10
+      responses:
+        '200':
+          description: Decrypted messages for the agent
+        '401':
+          description: Shared password is invalid
   /write:
     post:
       operationId: writeRelayMessage
