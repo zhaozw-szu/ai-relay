@@ -80,19 +80,31 @@ async function writeGitHubFile(env, path, contents, message) {
     content: base64(encoder.encode(contents)),
     branch: env.GITHUB_BRANCH || "main",
   };
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "ai-relay-worker",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "PUT",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "ai-relay-worker",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { ok: false, status: 502, details: `GitHub request failed: ${String(error).slice(0, 160)}` };
+  }
   if (!response.ok) {
-    return { ok: false, status: response.status };
+    let details = "GitHub returned an error";
+    try {
+      const errorBody = await response.json();
+      if (typeof errorBody.message === "string") details = errorBody.message.slice(0, 160);
+    } catch {
+      // Keep the generic message when GitHub does not return JSON.
+    }
+    return { ok: false, status: response.status, details };
   }
   return { ok: true };
 }
@@ -158,7 +170,7 @@ export default {
     };
     const path = `messages/${body.agent_id}/${stamp}-${id.slice(-12)}.json`;
     const result = await writeGitHubFile(env, path, JSON.stringify(record, null, 2), `relay: ${body.agent_id} ${id}`);
-    if (!result.ok) return json({ error: "GitHub write failed", status: result.status }, 502);
+    if (!result.ok) return json({ error: "GitHub write failed", status: result.status, details: result.details }, 502);
     return json({ ok: true, id, path, created_at: record.created_at });
   },
 };
