@@ -25,7 +25,7 @@ migrations_dir = "migrations"
 wrangler d1 migrations apply ai-relay-control --local
 ```
 
-当前分支包含 `0001_control_center.sql` 和 `0002_task_execution.sql` 两个迁移，必须按顺序应用。第二个迁移增加任务执行字段，不要只应用第一版后部署第二阶段 Worker。
+当前分支包含 `0001_control_center.sql`、`0002_task_execution.sql` 和 `0003_result_idempotency.sql` 三个迁移，必须按顺序应用。第二个迁移增加任务执行字段，第三个迁移增加可重试结果的幂等 ID；不要只应用第一版后部署第二阶段 Worker。
 
 确认 SQL 无误并计划上线后，才执行远端迁移：
 

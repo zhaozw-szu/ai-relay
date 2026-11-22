@@ -1,15 +1,18 @@
 import tempfile
 import unittest
 from pathlib import Path
+import json
+import threading
 from unittest.mock import patch
 
 from relay_agent import AgentConfig, RelayAgent, RelayError, execute_codex, resolve_working_directory
 
 
 class FakeClient:
-    def __init__(self, task):
+    def __init__(self, task, result_errors=None):
         self.task = task
         self.calls = []
+        self.result_errors = list(result_errors or [])
 
     def heartbeat(self, status, current_task_id=None):
         self.calls.append(("heartbeat", status, current_task_id))
@@ -31,6 +34,9 @@ class FakeClient:
 
     def result(self, task, result):
         self.calls.append(("result", task["task_id"], result["status"]))
+        if self.result_errors:
+            error = self.result_errors.pop(0)
+            raise error
         return {"ok": True}
 
 
@@ -90,6 +96,82 @@ class RelayAgentTests(unittest.TestCase):
             self.assertIn("read-only", command)
             self.assertEqual(popen.call_args.kwargs["shell"], False)
             self.assertEqual(result["status"], "succeeded")
+
+    def test_successful_codex_result_is_retried_without_rerunning_codex(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, state_file=str(Path(directory) / "state.json"), retry_file=str(Path(directory) / "outbox.json"), dead_letter_file=str(Path(directory) / "dead.json"))
+            task = {"task_id": "task-retry", "lease_token": "lease-retry", "working_directory_id": "project", "sandbox_mode": "read-only", "instruction": "inspect files", "approval_status": None}
+            client = FakeClient(task, [RelayError("temporary network failure")])
+            runner_calls = []
+
+            def runner(_config, received, _timeout):
+                runner_calls.append(received["task_id"])
+                return {"status": "succeeded", "result_summary": "done"}
+
+            agent = RelayAgent(config, client=client, runner=runner)
+            self.assertTrue(agent.run_once())
+            queued = json.loads(Path(config.retry_file).read_text(encoding="utf-8"))
+            self.assertEqual(queued[0]["result"]["status"], "succeeded")
+            self.assertEqual(runner_calls, ["task-retry"])
+            self.assertTrue(agent.run_once() is False)
+            self.assertEqual(runner_calls, ["task-retry"])
+            self.assertEqual(json.loads(Path(config.retry_file).read_text(encoding="utf-8")), [])
+
+    def test_permanent_result_failure_is_kept_in_dead_letter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, state_file=str(Path(directory) / "state.json"), retry_file=str(Path(directory) / "outbox.json"), dead_letter_file=str(Path(directory) / "dead.json"))
+            task = {"task_id": "task-dead", "lease_token": "lease-dead", "working_directory_id": "project", "sandbox_mode": "read-only", "instruction": "inspect files", "approval_status": None}
+            client = FakeClient(task, [RelayError("lease expired", status=409), RelayError("lease expired", status=409)])
+            agent = RelayAgent(config, client=client, runner=lambda *_: {"status": "succeeded", "result_summary": "done"})
+            agent.run_once()
+            agent.run_once()
+            dead = json.loads(Path(config.dead_letter_file).read_text(encoding="utf-8"))
+            self.assertEqual(dead[0]["reason"], "result_retry_failed")
+            self.assertEqual(dead[0]["result"]["status"], "succeeded")
+
+    def test_lease_loss_marks_execution_invalid_and_cancellation_terminates_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="unit-agent-fixture", working_directories={"project": directory}, heartbeat_interval_seconds=5)
+            task = {"task_id": "task-lease", "lease_token": "lease-lease", "lease_expires_at": "2099-01-01T00:00:00+00:00"}
+            class LeaseClient:
+                def renew(self, _task):
+                    raise RelayError("lease is gone", status=409)
+            agent = RelayAgent(config, client=LeaseClient())
+            agent._renew_stop.wait = lambda _seconds: False
+            agent._renew_loop(task)
+            self.assertTrue(agent._lease_lost.is_set())
+
+            class Process:
+                pid = None
+                returncode = -9
+                def __init__(self): self.killed = False
+                def communicate(self, timeout=None): return "", ""
+                def kill(self): self.killed = True
+            process = Process()
+            cancel = threading.Event(); cancel.set()
+            task_for_run = {"working_directory_id": "project", "sandbox_mode": "read-only", "approval_status": None, "instruction": "inspect files"}
+            with patch("relay_agent.subprocess.Popen", return_value=process):
+                result = execute_codex(config, task_for_run, timeout=10, cancel_event=cancel)
+            self.assertTrue(process.killed)
+            self.assertEqual(result["error_code"], "lease_lost")
+
+    def test_relative_state_paths_resolve_next_to_config_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "agent.json"
+            config_path.write_text(json.dumps({"worker_url": "https://relay.test", "agent_id": "codex-local-01", "agent_key": "fixture", "working_directories": {}}), encoding="utf-8")
+            config = AgentConfig.from_file(config_path)
+            self.assertEqual(Path(config.state_file), Path(directory) / "relay_agent_state.json")
+            self.assertEqual(Path(config.retry_file), Path(directory) / "relay_agent_outbox.json")
+
+    def test_corrupt_outbox_is_quarantined_instead_of_silently_discarded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = Path(directory) / "outbox.json"
+            outbox.write_text("not-json", encoding="utf-8")
+            config = AgentConfig(worker_url="https://relay.test", agent_id="codex-local-01", agent_key="fixture", working_directories={}, retry_file=str(outbox), state_file=str(Path(directory) / "state.json"), dead_letter_file=str(Path(directory) / "dead.json"))
+            agent = RelayAgent(config, client=FakeClient(None))
+            self.assertEqual(agent._load_queue(), [])
+            self.assertFalse(outbox.exists())
+            self.assertTrue(list(Path(directory).glob("outbox.json.corrupt-*")))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,11 @@ node_modules/
 *.log
 relay_agent_config.json
 relay-agent-config.json
+relay_agent_state.json
+relay_agent_outbox.json
+relay_agent_dead_letter.json
 agent-state.json
 result-outbox.json
+*.tmp
 messages/*/*.json
 receipts/*/*.md

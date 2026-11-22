@@ -12,5 +12,6 @@
   },
   "state_file": "E:/ai-relay-agent/agent-state.json",
   "retry_file": "E:/ai-relay-agent/result-outbox.json",
+  "dead_letter_file": "E:/ai-relay-agent/dead-letter.json",
   "allow_workspace_write": false
 }

@@ -112,6 +112,7 @@ function requireDatabase(request, env) { return database(env) ? null : json({ er
 async function dbFirst(env, sql, ...args) { return database(env).prepare(sql).bind(...args).first(); }
 async function dbAll(env, sql, ...args) { const result = await database(env).prepare(sql).bind(...args).all(); return result.results || []; }
 async function dbRun(env, sql, ...args) { return database(env).prepare(sql).bind(...args).run(); }
+async function dbBatch(env, statements) { return database(env).batch(statements); }
 async function audit(env, { conversationId = null, actor, eventType, payload = {} }) {
   await dbRun(env, `INSERT INTO audit_events (event_id, conversation_id, actor, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`, newId("audit"), conversationId, actor, eventType, JSON.stringify(payload), new Date().toISOString());
 }
@@ -219,6 +220,7 @@ function taskView(row, includeLease = false) {
     approval_id: row.approval_id || null,
     approval_status: row.approval_status || null,
     assigned_agent_id: row.assigned_agent_id || null,
+    result_id: row.result_id || null,
     result: parseJson(row.result_json, null),
     error: row.error_text || null,
   };
@@ -264,7 +266,8 @@ function taskStateToLegacyStatus(state) {
 function taskPayload(body, conversation) {
   const taskType = text(body.task_type || body.type) || "read_only_analysis";
   const sandbox = text(body.sandbox_mode) || (taskType === "read_only_analysis" ? "read-only" : "workspace-write");
-  const requiresApproval = bool(body.requires_approval, conversation.require_approval || taskType !== "read_only_analysis" || sandbox !== "read-only");
+  const forcedApproval = Boolean(conversation.require_approval || taskType !== "read_only_analysis" || sandbox !== "read-only");
+  const requiresApproval = forcedApproval || bool(body.requires_approval, false);
   if (!['read_only_analysis', 'code_change', 'command'].includes(taskType)) return { error: "unsupported task_type" };
   if (!['read-only', 'workspace-write'].includes(sandbox)) return { error: "unsupported sandbox_mode" };
   if (taskType === "read_only_analysis" && sandbox !== "read-only") return { error: "read_only_analysis requires read-only sandbox" };
@@ -314,8 +317,9 @@ async function handleTaskCreate(request, env, conversationId) {
   const executionState = payload.requiresApproval ? "waiting_approval" : "pending";
   const now = new Date().toISOString();
   try {
-    await dbRun(env, `INSERT INTO tasks (task_id, conversation_id, kind, status, idempotency_key, requested_by, assigned_agent_id, payload_json, approval_required, created_at, updated_at, target_agent_id, instruction, task_type, working_directory_id, sandbox_mode, priority, available_at, max_attempts, attempt_count, approval_id, execution_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, taskId, conversationId, payload.taskType, taskStateToLegacyStatus(executionState), idempotencyKey, "admin", null, JSON.stringify({ instruction: payload.instruction }), payload.requiresApproval ? 1 : 0, now, now, targetAgentId, payload.instruction, payload.taskType, text(body.working_directory_id) || null, payload.sandbox, payload.priority, availableAt, payload.maxAttempts, 0, approvalId, executionState);
-    if (approvalId) await dbRun(env, `INSERT INTO approvals (approval_id, task_id, conversation_id, requested_by, risk_level, operation, files_json, impact, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`, approvalId, taskId, conversationId, "admin", payload.sandbox === "workspace-write" ? "high" : "medium", payload.taskType, JSON.stringify(Array.isArray(body.files) ? body.files.slice(0, 100) : []), text(body.impact).slice(0, 2000), now);
+    const statements = [database(env).prepare(`INSERT INTO tasks (task_id, conversation_id, kind, status, idempotency_key, requested_by, assigned_agent_id, payload_json, approval_required, created_at, updated_at, target_agent_id, instruction, task_type, working_directory_id, sandbox_mode, priority, available_at, max_attempts, attempt_count, approval_id, execution_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(taskId, conversationId, payload.taskType, taskStateToLegacyStatus(executionState), idempotencyKey, "admin", null, JSON.stringify({ instruction: payload.instruction }), payload.requiresApproval ? 1 : 0, now, now, targetAgentId, payload.instruction, payload.taskType, text(body.working_directory_id) || null, payload.sandbox, payload.priority, availableAt, payload.maxAttempts, 0, approvalId, executionState)];
+    if (approvalId) statements.push(database(env).prepare(`INSERT INTO approvals (approval_id, task_id, conversation_id, requested_by, risk_level, operation, files_json, impact, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).bind(approvalId, taskId, conversationId, "admin", payload.sandbox === "workspace-write" ? "high" : "medium", payload.taskType, JSON.stringify(Array.isArray(body.files) ? body.files.slice(0, 100) : []), text(body.impact).slice(0, 2000), now));
+    await dbBatch(env, statements);
   } catch (error) {
     return json({ error: "task could not be created", details: String(error).slice(0, 180) }, 409, request, env);
   }
@@ -445,7 +449,7 @@ async function handleClaim(request, env) {
   const leaseSeconds = Math.min(Math.max(Number(body.lease_seconds || 900), 30), 3600);
   const lease = new Date(Date.now() + leaseSeconds * 1000).toISOString();
   const leaseToken = newId("lease");
-  const updated = await dbRun(env, `UPDATE tasks SET execution_state = 'claimed', status = 'leased', assigned_agent_id = ?, claimed_at = ?, lease_expires_at = ?, lease_token = ?, attempt_count = attempt_count + 1, attempts = attempts + 1, updated_at = ? WHERE task_id = ? AND target_agent_id = ? AND execution_state = 'pending' AND attempt_count < max_attempts AND (available_at IS NULL OR available_at <= ?)`, agentId, now, lease, leaseToken, now, candidate.task_id, agentId, now);
+  const updated = await dbRun(env, `UPDATE tasks SET execution_state = 'claimed', status = 'leased', assigned_agent_id = ?, claimed_at = ?, lease_expires_at = ?, lease_token = ?, attempt_count = attempt_count + 1, attempts = attempts + 1, updated_at = ? WHERE task_id = ? AND target_agent_id = ? AND execution_state = 'pending' AND attempt_count < max_attempts AND (available_at IS NULL OR available_at <= ?) AND EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = tasks.conversation_id AND c.state = 'running') AND (tasks.approval_id IS NULL OR EXISTS (SELECT 1 FROM approvals a WHERE a.approval_id = tasks.approval_id AND a.status = 'approved'))`, agentId, now, lease, leaseToken, now, candidate.task_id, agentId, now);
   if (!updated.meta?.changes) return json({ ok: true, task: null, retry: true }, 200, request, env);
   const claimed = await getTask(env, candidate.task_id);
   return json({ ok: true, task: taskView({ ...claimed, lease_token: leaseToken, assigned_agent_id: agentId, execution_state: "claimed", approval_status: candidate.approval_status }, true) }, 200, request, env);
@@ -457,6 +461,11 @@ async function handleTaskAction(request, env, taskId, action) {
   if (!safeAgentId(agentId) || !isAuthenticatedAgent(request, env, agentId)) return agentError(request, env);
   const task = await dbFirst(env, `SELECT * FROM tasks WHERE task_id = ?`, taskId); if (!task) return json({ error: "task not found" }, 404, request, env);
   if (task.assigned_agent_id !== agentId) return json({ error: "task is assigned to another agent" }, 403, request, env);
+  const resultId = action === "result" ? text(body.result_id) : "";
+  if (action === "result" && body.result_id !== undefined && !safeId(resultId)) return json({ error: "result_id must be a valid id" }, 400, request, env);
+  if (action === "result" && resultId && task.result_id === resultId && ["succeeded", "failed", "timed_out", "cancelled"].includes(task.execution_state)) {
+    return json({ ok: true, task_id: taskId, status: task.execution_state, result_id: resultId, idempotent_replay: true }, 200, request, env);
+  }
   if (!body.lease_token || body.lease_token !== task.lease_token) return json({ error: "valid lease_token is required" }, 403, request, env);
   const now = new Date().toISOString();
   if (action === "ack") {
@@ -472,7 +481,12 @@ async function handleTaskAction(request, env, taskId, action) {
     return json({ ok: true, task_id: taskId, lease_expires_at: lease }, 200, request, env);
   }
   const requestedStatus = body.status === "timed_out" ? "timed_out" : body.status === "failed" ? "failed" : "succeeded";
-  const updated = await dbRun(env, `UPDATE tasks SET execution_state = ?, status = ?, result_json = ?, result_summary = ?, error_text = ?, error_code = ?, finished_at = ?, lease_expires_at = NULL, lease_token = NULL, updated_at = ? WHERE task_id = ? AND assigned_agent_id = ? AND lease_token = ? AND execution_state IN ('claimed', 'running') AND lease_expires_at > ?`, requestedStatus, taskStateToLegacyStatus(requestedStatus), JSON.stringify(body.result ?? null), text(body.result_summary).slice(0, 10000), body.error ? text(body.error).slice(0, 2000) : null, text(body.error_code).slice(0, 80) || null, now, taskId, agentId, body.lease_token, now);
+  let updated;
+  try {
+    updated = await dbRun(env, `UPDATE tasks SET execution_state = ?, status = ?, result_id = ?, result_json = ?, result_summary = ?, error_text = ?, error_code = ?, finished_at = ?, lease_expires_at = NULL, lease_token = NULL, updated_at = ? WHERE task_id = ? AND assigned_agent_id = ? AND lease_token = ? AND execution_state IN ('claimed', 'running') AND lease_expires_at > ?`, requestedStatus, taskStateToLegacyStatus(requestedStatus), resultId || null, JSON.stringify(body.result ?? null), text(body.result_summary).slice(0, 10000), body.error ? text(body.error).slice(0, 2000) : null, text(body.error_code).slice(0, 80) || null, now, taskId, agentId, body.lease_token, now);
+  } catch (error) {
+    return json({ error: "task result could not be recorded", details: String(error).slice(0, 180) }, 409, request, env);
+  }
   if (!updated.meta?.changes) return json({ error: "task lease is invalid, expired, or already completed" }, 409, request, env);
   await audit(env, { conversationId: task.conversation_id, actor: agentId, eventType: `task.${requestedStatus}`, payload: { task_id: taskId } });
   let message = null;
@@ -493,7 +507,7 @@ async function handleTaskAction(request, env, taskId, action) {
       }
     }
   }
-  return json({ ok: true, task_id: taskId, status: requestedStatus, message }, 200, request, env);
+  return json({ ok: true, task_id: taskId, status: requestedStatus, result_id: resultId || null, message }, 200, request, env);
 }
 async function handleApprovals(request, env, url, approvalId = null) {
   const missing = requireDatabase(request, env); if (missing) return missing;

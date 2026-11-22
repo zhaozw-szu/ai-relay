@@ -64,7 +64,7 @@ Invoke-RestMethod `
 wrangler d1 create ai-relay-control
 # 将返回的真实 database_id 填入 wrangler.toml 的 [[d1_databases]]
 wrangler d1 migrations apply ai-relay-control --local
-# 0001 和 0002 会按顺序应用；第二阶段 Worker 需要两个迁移都完成
+# 0001、0002 和 0003 会按顺序应用；第二阶段 Worker 需要三个迁移都完成
 wrangler secret put MANAGEMENT_PASSWORD
 wrangler secret put AGENT_KEYS
 # 设置 CORS_ORIGINS 后，再由负责人审查并执行 wrangler deploy

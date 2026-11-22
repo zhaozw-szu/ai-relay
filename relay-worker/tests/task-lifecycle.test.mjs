@@ -42,11 +42,29 @@ class TaskStatement {
       this.db.tasks.set(task_id, { task_id, conversation_id, kind, status, idempotency_key, requested_by, assigned_agent_id, payload_json, approval_required, created_at, updated_at, target_agent_id, instruction, task_type, working_directory_id, sandbox_mode, priority, available_at, max_attempts, attempt_count, approval_id, execution_state, attempts: 0, lease_token: null, lease_expires_at: null });
       return { meta: { changes: 1 } };
     }
-    if (s.startsWith("INSERT INTO approvals")) { this.db.approvals.set(this.args[0], { approval_id: this.args[0], task_id: this.args[1], conversation_id: this.args[2], status: "pending" }); return { meta: { changes: 1 } }; }
+    if (s.startsWith("INSERT INTO approvals")) { if (this.db.failApprovalInsert) throw new Error("approval insert failed"); this.db.approvals.set(this.args[0], { approval_id: this.args[0], task_id: this.args[1], conversation_id: this.args[2], status: "pending" }); return { meta: { changes: 1 } }; }
     if (s.startsWith("INSERT INTO audit_events")) return { meta: { changes: 1 } };
+    if (s.startsWith("UPDATE tasks SET execution_state = CASE")) {
+      for (const task of this.db.tasks.values()) {
+        if (["claimed", "running"].includes(task.execution_state) && task.lease_expires_at <= this.args[1]) {
+          task.execution_state = task.attempt_count >= task.max_attempts ? "timed_out" : "pending";
+          task.status = task.attempt_count >= task.max_attempts ? "failed" : "queued";
+          task.assigned_agent_id = null;
+          task.lease_expires_at = null;
+          task.lease_token = null;
+        }
+      }
+      return { meta: { changes: 1 } };
+    }
     if (s.startsWith("UPDATE tasks SET execution_state = 'claimed'")) {
       const task = this.db.tasks.get(this.args[5]);
-      if (!task || task.target_agent_id !== this.args[6] || task.execution_state !== "pending" || task.available_at > this.args[7]) return { meta: { changes: 0 } };
+      if (this.db.pauseBeforeClaimUpdate && task) {
+        const selectedConversation = this.db.conversations.get(task.conversation_id);
+        if (selectedConversation) selectedConversation.state = "paused";
+      }
+      const conversation = task && this.db.conversations.get(task.conversation_id);
+      const approval = task?.approval_id ? this.db.approvals.get(task.approval_id) : null;
+      if (!task || task.target_agent_id !== this.args[6] || task.execution_state !== "pending" || task.available_at > this.args[7] || conversation?.state !== "running" || (task.approval_id && approval?.status !== "approved")) return { meta: { changes: 0 } };
       Object.assign(task, { execution_state: "claimed", status: "leased", assigned_agent_id: this.args[0], claimed_at: this.args[1], lease_expires_at: this.args[2], lease_token: this.args[3], attempt_count: task.attempt_count + 1, attempts: task.attempts + 1, updated_at: this.args[4] });
       return { meta: { changes: 1 } };
     }
@@ -54,14 +72,27 @@ class TaskStatement {
     if (s.startsWith("UPDATE tasks SET execution_state = 'pending'")) { const task = this.db.tasks.get(this.args[1]); if (!task || task.execution_state !== "waiting_approval") return { meta: { changes: 0 } }; task.execution_state = "pending"; task.status = "queued"; return { meta: { changes: 1 } }; }
     if (s.startsWith("UPDATE tasks SET execution_state = 'running'")) { const task = this.db.tasks.get(this.args[2]); if (!task || task.lease_token !== this.args[4] || task.execution_state !== "claimed") return { meta: { changes: 0 } }; task.execution_state = "running"; task.status = "running"; return { meta: { changes: 1 } }; }
     if (s.startsWith("UPDATE tasks SET lease_expires_at")) { const task = this.db.tasks.get(this.args[2]); if (!task || task.lease_token !== this.args[4]) return { meta: { changes: 0 } }; task.lease_expires_at = this.args[0]; return { meta: { changes: 1 } }; }
-    if (s.startsWith("UPDATE tasks SET execution_state = ?")) { const task = this.db.tasks.get(this.args[7]); if (!task || task.lease_token !== this.args[9]) return { meta: { changes: 0 } }; task.execution_state = this.args[0]; task.status = this.args[1]; task.lease_token = null; return { meta: { changes: 1 } }; }
+    if (s.startsWith("UPDATE tasks SET execution_state = ?")) { const task = this.db.tasks.get(this.args[8]); if (!task || task.lease_token !== this.args[10]) return { meta: { changes: 0 } }; task.execution_state = this.args[0]; task.status = this.args[1]; task.result_id = this.args[2]; task.lease_token = null; return { meta: { changes: 1 } }; }
     return { meta: { changes: 1 } };
   }
 }
 
 class TaskD1 {
-  constructor() { this.agents = new Map([["codex-local-01", {}]]); this.conversations = new Map([['task-conversation', { conversation_id: 'task-conversation', name: 'Task test', goal: '', state: 'running', max_rounds: 10, round_delay_seconds: 0, require_approval: 0, archived_at: null }]]); this.members = [{ conversation_id: 'task-conversation', agent_id: 'codex-local-01', role: 'executor' }]; this.tasks = new Map(); this.approvals = new Map(); }
+  constructor() { this.agents = new Map([["codex-local-01", {}]]); this.conversations = new Map([['task-conversation', { conversation_id: 'task-conversation', name: 'Task test', goal: '', state: 'running', max_rounds: 10, round_delay_seconds: 0, require_approval: 0, archived_at: null }]]); this.members = [{ conversation_id: 'task-conversation', agent_id: 'codex-local-01', role: 'executor' }]; this.tasks = new Map(); this.approvals = new Map(); this.pauseBeforeClaimUpdate = false; this.failApprovalInsert = false; }
   prepare(sql) { return new TaskStatement(this, sql); }
+  async batch(statements) {
+    const tasks = new Map(this.tasks);
+    const approvals = new Map(this.approvals);
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    } catch (error) {
+      this.tasks = tasks;
+      this.approvals = approvals;
+      throw error;
+    }
+  }
   conversationRow(id) { const row = this.conversations.get(id); return row ? { ...row, agents_json: JSON.stringify(this.members.filter((item) => item.conversation_id === id).map((item) => item.agent_id)) } : null; }
 }
 
@@ -109,5 +140,62 @@ test("approval gates write tasks and lease token gates completion", async () => 
   response = await call(`/api/agent/tasks/${claimed.task.task_id}/ack`, { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01", lease_token: claimed.task.lease_token }) }, env);
   assert.equal(response.status, 200);
   response = await call(`/api/agent/tasks/${claimed.task.task_id}/result`, { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01", lease_token: claimed.task.lease_token, status: "succeeded", result_summary: "approved result" }) }, env);
+  assert.equal(response.status, 200);
+});
+
+test("client cannot lower the approval requirement for a write task", async () => {
+  const env = bindings();
+  const response = await call("/api/conversations/task-conversation/tasks", { method: "POST", headers: admin, body: JSON.stringify({ target_agent_id: "codex-local-01", instruction: "edit a file", task_type: "code_change", sandbox_mode: "workspace-write", requires_approval: false, idempotency_key: "forced-approval" }) }, env);
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.equal(body.task.status, "waiting_approval");
+  assert.ok(body.task.approval_id);
+});
+
+test("pause after candidate selection prevents the final claim update", async () => {
+  const env = bindings();
+  await call("/api/conversations/task-conversation/tasks", { method: "POST", headers: admin, body: JSON.stringify({ target_agent_id: "codex-local-01", instruction: "inspect files", idempotency_key: "pause-race" }) }, env);
+  env.DB.pauseBeforeClaimUpdate = true;
+  const response = await call("/api/agent/claim", { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01" }) }, env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).task, null);
+  assert.equal(env.DB.tasks.size, 1);
+  assert.equal([...env.DB.tasks.values()][0].execution_state, "pending");
+});
+
+test("task and approval are atomic when the approval insert fails", async () => {
+  const env = bindings();
+  env.DB.failApprovalInsert = true;
+  const response = await call("/api/conversations/task-conversation/tasks", { method: "POST", headers: admin, body: JSON.stringify({ target_agent_id: "codex-local-01", instruction: "edit a file", task_type: "code_change", sandbox_mode: "workspace-write", idempotency_key: "atomic-failure" }) }, env);
+  assert.equal(response.status, 409);
+  assert.equal(env.DB.tasks.size, 0);
+  assert.equal(env.DB.approvals.size, 0);
+});
+
+test("result_id makes a completed result safe to retry", async () => {
+  const env = bindings();
+  await call("/api/conversations/task-conversation/tasks", { method: "POST", headers: admin, body: JSON.stringify({ target_agent_id: "codex-local-01", instruction: "inspect files", idempotency_key: "result-idempotent" }) }, env);
+  const claimResponse = await call("/api/agent/claim", { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01" }) }, env);
+  const claimed = await claimResponse.json();
+  const payload = { agent_id: "codex-local-01", lease_token: claimed.task.lease_token, result_id: "result-stable-1", status: "succeeded", result_summary: "done" };
+  let response = await call(`/api/agent/tasks/${claimed.task.task_id}/result`, { method: "POST", headers: agent, body: JSON.stringify(payload) }, env);
+  assert.equal(response.status, 200);
+  response = await call(`/api/agent/tasks/${claimed.task.task_id}/result`, { method: "POST", headers: agent, body: JSON.stringify(payload) }, env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).idempotent_replay, true);
+});
+
+test("an expired lease can be reclaimed, but the old token cannot report a result", async () => {
+  const env = bindings();
+  await call("/api/conversations/task-conversation/tasks", { method: "POST", headers: admin, body: JSON.stringify({ target_agent_id: "codex-local-01", instruction: "inspect files", idempotency_key: "lease-reclaim" }) }, env);
+  const firstClaim = await (await call("/api/agent/claim", { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01" }) }, env)).json();
+  const task = env.DB.tasks.get(firstClaim.task.task_id);
+  task.lease_expires_at = "2000-01-01T00:00:00.000Z";
+  const secondClaim = await (await call("/api/agent/claim", { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01" }) }, env)).json();
+  assert.ok(secondClaim.task?.lease_token);
+  assert.notEqual(secondClaim.task.lease_token, firstClaim.task.lease_token);
+  let response = await call(`/api/agent/tasks/${task.task_id}/result`, { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01", lease_token: firstClaim.task.lease_token, result_id: "old-result", status: "succeeded", result_summary: "stale" }) }, env);
+  assert.equal(response.status, 403);
+  response = await call(`/api/agent/tasks/${task.task_id}/result`, { method: "POST", headers: agent, body: JSON.stringify({ agent_id: "codex-local-01", lease_token: secondClaim.task.lease_token, result_id: "new-result", status: "succeeded", result_summary: "current" }) }, env);
   assert.equal(response.status, 200);
 });

@@ -10,7 +10,7 @@
 - `agent_id`：已经注册的固定代理 ID；
 - `agent_key`：只给这个代理使用的可轮换密钥；
 - `working_directories`：本地目录 ID 到绝对路径的白名单；
-- `state_file`、`retry_file`：放在仓库外；
+- `state_file`、`retry_file`、`dead_letter_file`：放在仓库外；如果配置里使用相对路径，Agent 会把它们解析到配置文件所在目录，而不是当前 Git 仓库；
 - `allow_workspace_write`：默认 `false`，不要为只读测试打开。
 
 示例：
@@ -28,6 +28,7 @@
   "working_directories": {"relay-template": "E:/图像篡改检测/github-relay-template"},
   "state_file": "E:/ai-relay-agent/state.json",
   "retry_file": "E:/ai-relay-agent/outbox.json",
+  "dead_letter_file": "E:/ai-relay-agent/dead-letter.json",
   "allow_workspace_write": false
 }
 ```
@@ -43,6 +44,8 @@ python scripts\relay_agent.py --config E:\ai-relay-agent\config.json --log-file 
 
 `--once` 用于联调，只处理一个任务；不带 `--once` 才会持续轮询。Ctrl+C 会停止轮询并尝试把 Agent 状态写成 `offline`。
 
+如果 `--log-file` 使用相对路径，它也会相对于配置文件目录保存；日志只记录任务 ID、状态和脱敏错误，不记录任务正文、租约令牌或 Agent 密钥。
+
 ## 安全约束
 
 - HTTP 请求使用 `X-Agent-Key`，日志会脱敏密钥；
@@ -52,7 +55,9 @@ python scripts\relay_agent.py --config E:\ai-relay-agent\config.json --log-file 
 - 默认只允许 `codex exec --sandbox read-only`；
 - 写沙箱必须同时满足本地 `allow_workspace_write=true` 和 Worker 审批通过；
 - 任务租约会在后台续期，结果提交必须携带正确 `lease_token`；
-- 网络失败的结果保存到本地 outbox，重启后重试；
+- Codex 已成功但回执网络失败时，原始 `succeeded` 结果保存到本地 outbox，重启后重试，不会再次执行 Codex；
+- Worker 通过 `result_id` 接受重复回执，永久失败或租约失效的结果写入 dead-letter 文件供人工处理；outbox 超过容量时也会转入 dead-letter，不会静默丢弃；
+- 租约明确失效或无法在安全期限内续租时，Agent 会停止提交结果，并终止 Codex 子进程树；
 - 配置、状态和 outbox 不应放进公开仓库。
 
 生产前仍需把配置文件放在仓库外、限制文件权限，并轮换曾经暴露过的旧凭据。

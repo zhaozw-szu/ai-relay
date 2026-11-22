@@ -23,7 +23,14 @@ node --check relay-worker/src/index.js
 - 工作目录白名单；
 - 未开启审批时拒绝 workspace-write；
 - UTF-8/AES-GCM 旧消息解密；
-- 两个迁移文件可在 SQLite 中顺序执行。
+- 三个迁移文件可按顺序应用，第三个迁移增加结果回执幂等 ID。
+
+## 第二阶段修复版新增覆盖
+
+- Codex 成功但首次回执失败时，outbox 保留原始 `succeeded` 结果并在重试时不重新执行；
+- 永久回执失败进入 dead-letter，损坏的 outbox 文件会被隔离保存；
+- 明确租约失效触发取消和子进程树终止，过期 lease token 不能提交回执；
+- 暂停与 claim 竞争、客户端降低审批要求、task+approval 部分写入失败和 `result_id` 幂等回执。
 
 ## 真实测试准备
 
