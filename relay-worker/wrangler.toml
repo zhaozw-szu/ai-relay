@@ -6,3 +6,17 @@ compatibility_date = "2026-11-20"
 GITHUB_OWNER = "zhaozw-szu"
 GITHUB_REPO = "ai-relay"
 GITHUB_BRANCH = "main"
+# Configure these in the Cloudflare dashboard or with wrangler secret/vars before
+# enabling the management API. They are intentionally not committed as values:
+# MANAGEMENT_PASSWORD (secret) - separate from RELAY_PASSWORD
+# AGENT_KEYS (secret JSON, for example {"codex-local-01":"rotate-me"})
+# CORS_ORIGINS (variable, for example https://zhaozw-szu.github.io)
+
+# D1 is deliberately left commented until the operator creates a database and
+# supplies its real ID. This prevents an unreviewed deployment from pointing at
+# a production database.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "ai-relay-control"
+# database_id = "<fill-after-wrangler-d1-create>"
+# migrations_dir = "migrations"

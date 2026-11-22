@@ -3,87 +3,75 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Relay</title>
+  <title>AI Relay Control Center</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-    label { display: block; margin: .8rem 0 .25rem; font-weight: 600; }
-    input, textarea, button { box-sizing: border-box; width: 100%; padding: .65rem; font: inherit; }
-    textarea { min-height: 9rem; resize: vertical; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    .buttons { display: flex; gap: .75rem; margin-top: 1rem; }
-    button { cursor: pointer; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; border: 1px solid #8886; border-radius: .5rem; }
-    small { opacity: .75; }
-    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+    body { max-width: 1180px; margin: 1.5rem auto; padding: 0 1rem 3rem; line-height: 1.45; }
+    h1 { margin-bottom: .25rem; } h2 { margin-top: 1.7rem; }
+    label { display: block; margin: .65rem 0 .2rem; font-weight: 600; }
+    input, textarea, select, button { box-sizing: border-box; width: 100%; padding: .55rem; font: inherit; }
+    textarea { min-height: 7rem; resize: vertical; }
+    button { cursor: pointer; } button + button { margin-left: .4rem; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; }
+    .grid.two { grid-template-columns: repeat(2, 1fr); }
+    .card, .panel { border: 1px solid #8886; border-radius: .6rem; padding: .9rem; margin-top: .8rem; }
+    .metric { font-size: 1.7rem; font-weight: 700; } .muted { opacity: .72; font-size: .9rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .55rem; } .actions button { width: auto; }
+    .conversation { display: flex; justify-content: space-between; gap: .8rem; align-items: start; }
+    .state { border-radius: 999px; padding: .1rem .55rem; border: 1px solid #8888; white-space: nowrap; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .8rem; border: 1px solid #8886; border-radius: .5rem; max-height: 28rem; overflow: auto; }
+    @media (max-width: 760px) { .grid, .grid.two { grid-template-columns: 1fr; } .conversation { display: block; } }
   </style>
 </head>
 <body>
-  <h1>AI Relay</h1>
-  <p><small>GitHub Pages 是界面；Worker 负责验证密码、加密和读写 GitHub。密码不会保存到浏览器。</small></p>
-
-  <label for="password">共享密码</label>
-  <input id="password" type="password" autocomplete="off">
-
-  <div class="row">
-    <div>
-      <label for="agent">我的 agent_id</label>
-      <input id="agent" value="cloud-chatgpt-01">
+  <h1>AI Relay Control Center</h1>
+  <p class="muted">GitHub Pages 只提供界面；Worker 验证管理凭据并把状态保存到 D1。密码只保留在当前页面内存。</p>
+  <section class="panel">
+    <h2>连接</h2>
+    <div class="grid two">
+      <div><label for="adminPassword">管理密码</label><input id="adminPassword" type="password" autocomplete="off" placeholder="X-Relay-Admin"></div>
+      <div><label for="relayPassword">消息共享密码（旧协议）</label><input id="relayPassword" type="password" autocomplete="off" placeholder="X-Relay-Password"></div>
     </div>
-    <div>
-      <label for="to">接收者 agent_id</label>
-      <input id="to" value="codex-local-01">
-    </div>
-  </div>
-
-  <label for="conversation">conversation_id</label>
-  <input id="conversation" value="utf8-test">
-
-  <label for="content">消息</label>
-  <textarea id="content" placeholder="输入要发送的任务或回复"></textarea>
-
-  <div class="buttons">
-    <button id="send">发送消息</button>
-    <button id="read">读取回复</button>
-  </div>
-
-  <h2>结果</h2>
-  <pre id="result">等待操作…</pre>
-
+    <div class="actions"><button id="refresh">刷新控制台</button><button id="health">检查 Worker</button></div>
+    <pre id="result">等待操作…</pre>
+  </section>
+  <section><h2>总览</h2><div class="grid"><div class="card"><div id="conversationCount" class="metric">—</div><div class="muted">对话</div></div><div class="card"><div id="runningCount" class="metric">—</div><div class="muted">运行中</div></div><div class="card"><div id="agentCount" class="metric">—</div><div class="muted">已注册代理</div></div></div></section>
+  <section class="panel">
+    <h2>注册代理</h2>
+    <div class="grid"><div><label for="newAgentId">agent_id</label><input id="newAgentId" value="codex-local-01"></div><div><label for="newAgentName">名称</label><input id="newAgentName" value="本地 Codex"></div><div><label for="newAgentRole">角色</label><select id="newAgentRole"><option>executor</option><option>planner</option><option>reviewer</option><option selected>observer</option></select></div></div>
+    <div class="actions"><button id="registerAgent">注册代理</button></div>
+  </section>
+  <section class="panel">
+    <h2>创建对话</h2>
+    <div class="grid two"><div><label for="conversationName">名称</label><input id="conversationName" value="ChatGPT ↔ Codex"></div><div><label for="conversationId">conversation_id（可选）</label><input id="conversationId" placeholder="自动生成"></div></div>
+    <label for="conversationGoal">系统任务目标</label><textarea id="conversationGoal" placeholder="写明本轮对话的目标和边界"></textarea>
+    <div class="grid"><div><label for="conversationAgents">参与 agent_id（逗号分隔）</label><input id="conversationAgents" value="cloud-chatgpt-01,codex-local-01"></div><div><label for="maxRounds">最大轮数</label><input id="maxRounds" type="number" value="10" min="1"></div><div><label for="pollInterval">检查间隔（秒）</label><input id="pollInterval" type="number" value="60" min="5"></div></div>
+    <div class="actions"><button id="createConversation">创建对话</button></div>
+  </section>
+  <section><h2>对话</h2><div id="conversations"><p class="muted">尚未加载。</p></div></section>
+  <section class="panel">
+    <h2>旧协议消息收发</h2>
+    <div class="grid two"><div><label for="messageFrom">我的 agent_id</label><input id="messageFrom" value="cloud-chatgpt-01"></div><div><label for="messageTo">接收者 agent_id</label><input id="messageTo" value="codex-local-01"></div></div>
+    <label for="messageConversation">conversation_id</label><input id="messageConversation" value="utf8-test">
+    <label for="messageContent">消息</label><textarea id="messageContent" placeholder="输入任务或回复"></textarea>
+    <div class="actions"><button id="sendMessage">发送消息</button><button id="readMessage">读取回复</button></div>
+  </section>
   <script>
     const API = "https://ai-relay-writer.zhaozw-ai-relay.workers.dev";
     const $ = (id) => document.getElementById(id);
-    const output = (value) => { $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); };
-    const headers = () => ({ "X-Relay-Password": $("password").value });
-
-    $("send").onclick = async () => {
-      try {
-        const response = await fetch(`${API}/write`, {
-          method: "POST",
-          headers: { ...headers(), "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({
-            agent_id: $("agent").value.trim(),
-            to: [$("to").value.trim()],
-            conversation_id: $("conversation").value.trim(),
-            type: "task",
-            content: $("content").value,
-          }),
-        });
-        output(await response.json());
-      } catch (error) { output(String(error)); }
-    };
-
-    $("read").onclick = async () => {
-      try {
-        const params = new URLSearchParams({
-          agent_id: $("agent").value.trim(),
-          conversation_id: $("conversation").value.trim(),
-          limit: "20",
-        });
-        const response = await fetch(`${API}/read?${params}`, { headers: { ...headers(), "Accept": "application/json" } });
-        output(await response.json());
-      } catch (error) { output(String(error)); }
-    };
+    const show = (value) => { $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); };
+    const adminHeaders = () => ({ "X-Relay-Admin": $("adminPassword").value, Accept: "application/json" });
+    const relayHeaders = () => ({ "X-Relay-Password": $("relayPassword").value, Accept: "application/json" });
+    async function api(path, options = {}) { const response = await fetch(API + path, { ...options, headers: { Accept: "application/json", ...(options.headers || {}) } }); const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` })); if (!response.ok) throw new Error(JSON.stringify(body)); return body; }
+    async function refresh() { try { const [agents, conversations] = await Promise.all([api("/api/agents", { headers: adminHeaders() }), api("/api/conversations?limit=100", { headers: adminHeaders() })]); $("agentCount").textContent = agents.agents.length; $("conversationCount").textContent = conversations.conversations.length; $("runningCount").textContent = conversations.conversations.filter((item) => item.state === "running").length; $("conversations").innerHTML = conversations.conversations.length ? conversations.conversations.map(renderConversation).join("") : '<p class="muted">暂无对话。</p>'; show({ ok: true, agents: agents.agents.length, conversations: conversations.conversations.length }); } catch (error) { show(String(error)); } }
+    function renderConversation(item) { const id = encodeURIComponent(item.conversation_id); const controls = item.state === "running" ? `<button data-action="pause" data-id="${id}">暂停</button>` : item.state === "paused" ? `<button data-action="resume" data-id="${id}">恢复</button>` : item.state !== "archived" ? `<button data-action="start" data-id="${id}">开始</button>` : ""; return `<div class="card conversation"><div><strong>${escapeHtml(item.name)}</strong><div class="muted">${escapeHtml(item.conversation_id)} · ${escapeHtml(item.state)} · 代理：${escapeHtml(item.agents.join(", "))}</div><div>${escapeHtml(item.goal || "无目标说明")}</div></div><div class="actions"><span class="state">${escapeHtml(item.state)}</span>${controls}${item.state !== "stopped" && item.state !== "archived" ? `<button data-action="stop" data-id="${id}">停止</button>` : ""}${item.state !== "archived" ? `<button data-action="archive" data-id="${id}">归档</button>` : ""}</div></div>`; }
+    function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
+    $("refresh").onclick = refresh; $("health").onclick = async () => { try { show(await api("/health")); } catch (error) { show(String(error)); } };
+    $("registerAgent").onclick = async () => { try { show(await api("/api/agents", { method: "POST", headers: { ...adminHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ agent_id: $("newAgentId").value.trim(), name: $("newAgentName").value.trim(), role: $("newAgentRole").value, type: "custom" }) })); await refresh(); } catch (error) { show(String(error)); } };
+    $("createConversation").onclick = async () => { try { const agents = $("conversationAgents").value.split(",").map((value) => value.trim()).filter(Boolean); const body = { name: $("conversationName").value.trim(), goal: $("conversationGoal").value, agents, max_rounds: Number($("maxRounds").value), poll_interval_seconds: Number($("pollInterval").value), round_delay_seconds: 300, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }; if ($("conversationId").value.trim()) body.conversation_id = $("conversationId").value.trim(); show(await api("/api/conversations", { method: "POST", headers: { ...adminHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) })); await refresh(); } catch (error) { show(String(error)); } };
+    $("conversations").onclick = async (event) => { const button = event.target.closest("button[data-action]"); if (!button) return; const id = decodeURIComponent(button.dataset.id); try { if (button.dataset.action === "archive") show(await api(`/api/conversations/${id}`, { method: "PATCH", headers: { ...adminHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ archived: true }) })); else show(await api(`/api/conversations/${id}/${button.dataset.action}`, { method: "POST", headers: adminHeaders() })); await refresh(); } catch (error) { show(String(error)); } };
+    $("sendMessage").onclick = async () => { try { const body = { agent_id: $("messageFrom").value.trim(), to: [$("messageTo").value.trim()], conversation_id: $("messageConversation").value.trim(), type: "task", content: $("messageContent").value }; const response = await fetch(`${API}/write`, { method: "POST", headers: { ...relayHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(body) }); show(await response.json()); } catch (error) { show(String(error)); } };
+    $("readMessage").onclick = async () => { try { const params = new URLSearchParams({ agent_id: $("messageFrom").value.trim(), conversation_id: $("messageConversation").value.trim(), limit: "20" }); const response = await fetch(`${API}/read?${params}`, { headers: relayHeaders() }); show(await response.json()); } catch (error) { show(String(error)); } };
   </script>
 </body>
 </html>

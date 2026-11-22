@@ -6,3 +6,10 @@ test_message.txt
 response.txt
 node_modules/
 .wrangler/
+*.log
+relay_agent_config.json
+relay-agent-config.json
+agent-state.json
+result-outbox.json
+messages/*/*.json
+receipts/*/*.md

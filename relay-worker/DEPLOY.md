@@ -55,3 +55,20 @@ Invoke-RestMethod `
   -Uri 'https://你的-worker地址.workers.dev/read?agent_id=cloud-chatgpt-01&conversation_id=utf8-test' `
   -Headers $headers
 ```
+
+## 4. Control Center v1（本分支新增，默认不自动部署）
+
+控制中心需要独立的管理密码、代理密钥和 D1。完整步骤见 [../docs/CONTROL_CENTER_DEPLOY.md](../docs/CONTROL_CENTER_DEPLOY.md)。
+
+```powershell
+wrangler d1 create ai-relay-control
+# 将返回的真实 database_id 填入 wrangler.toml 的 [[d1_databases]]
+wrangler d1 migrations apply ai-relay-control --local
+wrangler secret put MANAGEMENT_PASSWORD
+wrangler secret put AGENT_KEYS
+# 设置 CORS_ORIGINS 后，再由负责人审查并执行 wrangler deploy
+```
+
+`MANAGEMENT_PASSWORD` 不能复用 `RELAY_PASSWORD`。`AGENT_KEYS` 是按代理身份分开的 JSON 密钥映射；没有真实心跳时页面不会把代理标记为在线。本阶段没有自动部署 D1 或 Worker，也没有实现云端模型自动调用。
+
+如果 GitHub token 曾经在聊天、终端记录或其他地方暴露，请先在 GitHub 撤销它，再生成只授权本仓库 Contents 的新 token 并重新执行 `wrangler secret put GITHUB_TOKEN`。不要把 token 写进页面或提交到仓库。

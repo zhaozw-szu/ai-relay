@@ -1,0 +1,8 @@
+{
+  "name": "ai-relay-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/control-center.test.mjs"
+  }
+}

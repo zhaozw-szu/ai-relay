@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: AI Relay Writer
-  version: 1.0.0
-  description: Write an encrypted message into the public ai-relay GitHub repository.
+  title: AI Relay Control Center
+  version: 1.1.0
+  description: Legacy encrypted relay plus the first persistent control-center APIs.
 servers:
   - url: https://ai-relay-writer.zhaozw-ai-relay.workers.dev
 paths:
@@ -72,6 +72,10 @@ paths:
                   default: task
                 content:
                   type: string
+                reply_to:
+                  type: string
+                task_id:
+                  type: string
       responses:
         '200':
           description: Message was encrypted and committed
@@ -79,9 +83,95 @@ paths:
           description: Shared password is invalid
         '403':
           description: Agent is not registered
+  /api/agents:
+    get:
+      operationId: listAgents
+      security:
+        - ManagementPassword: []
+      responses:
+        '200':
+          description: Registered agents and real heartbeat status
+    post:
+      operationId: registerAgent
+      security:
+        - ManagementPassword: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties:
+                agent_id: { type: string }
+                name: { type: string }
+                type: { type: string }
+                role: { type: string }
+                capabilities: { type: array, items: { type: string } }
+      responses:
+        '201': { description: Agent registered }
+  /api/conversations:
+    get:
+      operationId: listConversations
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Persisted conversations }
+    post:
+      operationId: createConversation
+      security:
+        - ManagementPassword: []
+      responses:
+        '201': { description: Conversation created }
+  /api/conversations/{conversation_id}:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getConversation
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Conversation state }
+    patch:
+      operationId: updateConversation
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Conversation updated or archived }
+  /api/conversations/{conversation_id}/{action}:
+    parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: action
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [start, pause, resume, stop, events, messages]
+    post:
+      operationId: conversationAction
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: State transition accepted }
+    get:
+      operationId: conversationSubresource
+      security:
+        - ManagementPassword: []
+      responses:
+        '200': { description: Events or message index }
 components:
   securitySchemes:
     RelayPassword:
       type: apiKey
       in: header
       name: X-Relay-Password
+    ManagementPassword:
+      type: apiKey
+      in: header
+      name: X-Relay-Admin
